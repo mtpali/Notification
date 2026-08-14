@@ -11,14 +11,18 @@ class BootReceiver : BroadcastReceiver() {
         if (!Prefs.receiverEnabled(context)) return
         if (!CryptoBox.isValidPairCode(Prefs.pairCode(context))) return
 
-        if (Prefs.receiverTransport(context) == Prefs.RECEIVER_HIDDEN) {
-            try {
-                context.startService(Intent(context, HiddenReceiverService::class.java))
-            } catch (_: IllegalStateException) {
+        when (Prefs.receiverTransport(context)) {
+            Prefs.RECEIVER_PUSH -> FcmTransport.sync(context)
+
+            Prefs.RECEIVER_HIDDEN -> {
+                try {
+                    context.startService(Intent(context, HiddenReceiverService::class.java))
+                } catch (_: IllegalStateException) {
+                }
+                MirrorNotificationListener.refresh(context)
             }
-            MirrorNotificationListener.refresh(context)
-        } else {
-            context.startForegroundService(Intent(context, ReceiverService::class.java))
+
+            else -> context.startForegroundService(Intent(context, ReceiverService::class.java))
         }
     }
 }
