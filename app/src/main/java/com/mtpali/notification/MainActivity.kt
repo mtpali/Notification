@@ -3,8 +3,6 @@ package com.mtpali.notification
 import android.app.Activity
 import android.content.Intent
 import android.os.Bundle
-import android.os.Handler
-import android.os.Looper
 import android.provider.Settings
 import android.text.InputType
 import android.widget.Button
@@ -20,35 +18,24 @@ class MainActivity : Activity() {
     private lateinit var senderRadio: RadioButton
     private lateinit var receiverRadio: RadioButton
     private lateinit var pairInput: EditText
-    private lateinit var statusText: TextView
-    private lateinit var filterText: TextView
-    private val handler = Handler(Looper.getMainLooper())
+    private lateinit var senderInfo: TextView
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), dp(20), dp(20), dp(28))
+            setPadding(dp(20), dp(18), dp(20), dp(24))
         }
-
-        val scroll = ScrollView(this).apply { addView(root) }
-        setContentView(scroll)
+        setContentView(ScrollView(this).apply { addView(root) })
 
         root.addView(TextView(this).apply {
             text = "Notification"
-            textSize = 28f
-        })
-        root.addView(TextView(this).apply {
-            text = "Encrypted notification bridge for two Android phones"
-            textSize = 15f
-            setPadding(0, dp(4), 0, dp(18))
+            textSize = 27f
+            setPadding(0, 0, 0, dp(10))
         })
 
-        root.addView(sectionTitle("1. Choose this phone's role"))
-        val modeGroup = RadioGroup(this).apply {
-            orientation = RadioGroup.HORIZONTAL
-        }
+        val modeGroup = RadioGroup(this).apply { orientation = RadioGroup.HORIZONTAL }
         senderRadio = RadioButton(this).apply { text = "Sender" }
         receiverRadio = RadioButton(this).apply { text = "Receiver" }
         modeGroup.addView(senderRadio)
@@ -58,193 +45,127 @@ class MainActivity : Activity() {
         if (Prefs.mode(this) == Prefs.MODE_RECEIVER) receiverRadio.isChecked = true
         else senderRadio.isChecked = true
 
-        root.addView(sectionTitle("2. Pair Code"))
-        root.addView(TextView(this).apply {
-            text = "Use the same simple 6-digit code on both phones."
-        })
-
+        root.addView(sectionTitle("Pair Code"))
         pairInput = EditText(this).apply {
-            hint = "6-digit Pair Code"
+            hint = "6-digit code"
             setSingleLine(true)
             inputType = InputType.TYPE_CLASS_NUMBER
             setText(Prefs.pairCode(this@MainActivity))
         }
         root.addView(pairInput)
-
         root.addView(Button(this).apply {
-            text = "Generate 6-digit Pair Code"
+            text = "Generate"
             setOnClickListener {
                 pairInput.setText(CryptoBox.generatePairCode())
                 pairInput.setSelection(pairInput.text.length)
             }
         })
-
         root.addView(Button(this).apply {
-            text = "Save settings"
-            setOnClickListener { saveSettings(showToast = true) }
+            text = "Save"
+            setOnClickListener { saveSettings(true) }
         })
 
-        root.addView(sectionTitle("3. Sender setup"))
+        root.addView(sectionTitle("Sender"))
         root.addView(Button(this).apply {
-            text = "Open Notification Access"
-            setOnClickListener {
-                startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
-            }
+            text = "Notification Access"
+            setOnClickListener { startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) }
         })
-
-        filterText = TextView(this)
-        root.addView(filterText)
         root.addView(Button(this).apply {
-            text = "Choose apps to forward"
+            text = "Apps"
             setOnClickListener {
                 startActivity(Intent(this@MainActivity, AppSelectionActivity::class.java))
             }
         })
-
         root.addView(Button(this).apply {
-            text = "Send Test Notification"
+            text = "Send Test"
             setOnClickListener {
-                if (!saveSettings(showToast = false)) return@setOnClickListener
+                if (!saveSettings(false)) return@setOnClickListener
                 if (Prefs.mode(this@MainActivity) != Prefs.MODE_SENDER) {
-                    Toast.makeText(this@MainActivity, "Select Sender first", Toast.LENGTH_SHORT).show()
+                    toast("Select Sender")
                     return@setOnClickListener
                 }
-                if (!CryptoBox.isValidPairCode(Prefs.pairCode(this@MainActivity))) {
-                    Toast.makeText(this@MainActivity, "Enter a 6-digit Pair Code first", Toast.LENGTH_SHORT).show()
-                    return@setOnClickListener
-                }
-
                 val now = System.currentTimeMillis()
                 RelayClient.publish(
                     applicationContext,
                     MirrorPayload(
                         packageName = packageName,
                         appName = "Notification",
-                        title = "Test notification",
-                        text = "Internet relay test from Sender",
+                        title = "Test",
+                        text = "Test message",
                         postTime = now,
                         notificationKey = "test-$now"
                     )
                 )
-                Toast.makeText(this@MainActivity, "Test sent", Toast.LENGTH_SHORT).show()
-                handler.postDelayed({ updateStatus() }, 2000)
+                toast("Sent")
             }
         })
+        senderInfo = TextView(this).apply { setPadding(0, dp(4), 0, 0) }
+        root.addView(senderInfo)
 
-        root.addView(sectionTitle("4. Receiver setup"))
-        root.addView(TextView(this).apply {
-            text = "Receiver uses a persistent WebSocket connection for low-latency delivery."
-        })
+        root.addView(sectionTitle("Receiver"))
         root.addView(Button(this).apply {
-            text = "Start Receiver"
+            text = "Start"
             setOnClickListener {
-                if (!saveSettings(showToast = false)) return@setOnClickListener
-
+                if (!saveSettings(false)) return@setOnClickListener
                 if (Prefs.mode(this@MainActivity) != Prefs.MODE_RECEIVER) {
-                    Toast.makeText(this@MainActivity, "Select Receiver first", Toast.LENGTH_SHORT).show()
+                    toast("Select Receiver")
                     return@setOnClickListener
                 }
-
-                if (!CryptoBox.isValidPairCode(Prefs.pairCode(this@MainActivity))) {
-                    Toast.makeText(this@MainActivity, "Enter a 6-digit Pair Code first", Toast.LENGTH_SHORT).show()
-                    return@setOnClickListener
-                }
-
                 startForegroundService(Intent(this@MainActivity, ReceiverService::class.java))
-                Toast.makeText(this@MainActivity, "Receiver started", Toast.LENGTH_SHORT).show()
-                handler.postDelayed({ updateStatus() }, 1500)
+                toast("Started")
             }
         })
         root.addView(Button(this).apply {
-            text = "Stop Receiver"
+            text = "Stop"
             setOnClickListener {
                 stopService(Intent(this@MainActivity, ReceiverService::class.java))
-                Toast.makeText(this@MainActivity, "Receiver stopped", Toast.LENGTH_SHORT).show()
-                handler.postDelayed({ updateStatus() }, 500)
+                toast("Stopped")
             }
         })
 
-        root.addView(sectionTitle("Diagnostics"))
-        root.addView(Button(this).apply {
-            text = "Refresh Status"
-            setOnClickListener { updateStatus() }
-        })
-
-        statusText = TextView(this).apply { textSize = 15f }
-        root.addView(statusText)
-        updateStatus()
+        updateInfo()
     }
 
     override fun onResume() {
         super.onResume()
-        if (::statusText.isInitialized) updateStatus()
+        if (::senderInfo.isInitialized) updateInfo()
     }
 
     private fun saveSettings(showToast: Boolean): Boolean {
-        val pairCode = pairInput.text.toString().trim()
-
-        if (pairCode.isNotEmpty() && !CryptoBox.isValidPairCode(pairCode)) {
-            pairInput.error = "Pair Code must be exactly 6 digits"
-            if (showToast) {
-                Toast.makeText(this, "Pair Code must be exactly 6 digits", Toast.LENGTH_SHORT).show()
-            }
+        val code = pairInput.text.toString().trim()
+        if (!CryptoBox.isValidPairCode(code)) {
+            pairInput.error = "6 digits"
+            if (showToast) toast("Enter 6 digits")
             return false
         }
 
         pairInput.error = null
-        val previousMode = Prefs.mode(this)
+        val oldMode = Prefs.mode(this)
         val mode = if (receiverRadio.isChecked) Prefs.MODE_RECEIVER else Prefs.MODE_SENDER
         Prefs.setMode(this, mode)
-        Prefs.setPairCode(this, pairCode)
-
-        if (previousMode == Prefs.MODE_RECEIVER && mode == Prefs.MODE_SENDER) {
+        Prefs.setPairCode(this, code)
+        if (oldMode == Prefs.MODE_RECEIVER && mode == Prefs.MODE_SENDER) {
             stopService(Intent(this, ReceiverService::class.java))
         }
-
-        if (showToast) Toast.makeText(this, "Settings saved", Toast.LENGTH_SHORT).show()
-        updateStatus()
+        if (showToast) toast("Saved")
+        updateInfo()
         return true
     }
 
-    private fun updateStatus() {
-        val notificationAccess = Settings.Secure.getString(
-            contentResolver,
-            "enabled_notification_listeners"
-        )?.contains(packageName) == true
-
-        filterText.text = if (Prefs.forwardAllApps(this)) {
-            "App filter: forwarding all apps"
-        } else {
-            "App filter: ${Prefs.selectedApps(this).size} selected app(s)"
-        }
-
-        val role = if (Prefs.mode(this) == Prefs.MODE_RECEIVER) "Receiver" else "Sender"
-        val pairCode = Prefs.pairCode(this)
-        val paired = when {
-            pairCode.isBlank() -> "not configured"
-            CryptoBox.isValidPairCode(pairCode) -> "6-digit code configured"
-            else -> "old code - generate a new 6-digit code"
-        }
-        val access = if (notificationAccess) "enabled" else "not enabled"
-
-        statusText.text = buildString {
-            append("Role: $role\n")
-            append("Pair Code: $paired\n")
-            append("Notification Access: $access\n\n")
-            append("Sender listener: ${Prefs.listenerStatus(this@MainActivity)}\n")
-            append("Last captured: ${Prefs.lastCapture(this@MainActivity)}\n")
-            append("Last publish: ${Prefs.lastPublish(this@MainActivity)}\n\n")
-            append("Receiver: ${Prefs.receiverStatus(this@MainActivity)}\n")
-            append("Last received: ${Prefs.lastReceive(this@MainActivity)}")
-        }
+    private fun updateInfo() {
+        val access = Settings.Secure.getString(contentResolver, "enabled_notification_listeners")
+            ?.contains(packageName) == true
+        val apps = if (Prefs.forwardAllApps(this)) "All apps" else "${Prefs.selectedApps(this).size} apps"
+        senderInfo.text = "Access: ${if (access) "ON" else "OFF"} • $apps"
     }
 
-    private fun sectionTitle(text: String): TextView = TextView(this).apply {
-        this.text = text
-        textSize = 19f
-        setPadding(0, dp(18), 0, dp(8))
+    private fun sectionTitle(value: String) = TextView(this).apply {
+        text = value
+        textSize = 18f
+        setPadding(0, dp(14), 0, dp(5))
     }
 
-    private fun dp(value: Int): Int =
-        (value * resources.displayMetrics.density).toInt()
+    private fun toast(value: String) = Toast.makeText(this, value, Toast.LENGTH_SHORT).show()
+
+    private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
 }
