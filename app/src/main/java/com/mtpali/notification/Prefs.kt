@@ -9,6 +9,7 @@ object Prefs {
     private const val KEY_FORWARD_ALL = "forward_all"
     private const val KEY_SELECTED_APPS = "selected_apps"
     private const val KEY_LAST_MESSAGE_ID = "last_message_id"
+    private const val KEY_LAST_COMMAND_ID = "last_command_id"
 
     const val MODE_SENDER = "sender"
     const val MODE_RECEIVER = "receiver"
@@ -31,7 +32,10 @@ object Prefs {
         val old = pairCode(context)
         prefs(context).edit().apply {
             putString(KEY_PAIR_CODE, normalized)
-            if (old != normalized) remove(KEY_LAST_MESSAGE_ID)
+            if (old != normalized) {
+                remove(KEY_LAST_MESSAGE_ID)
+                remove(KEY_LAST_COMMAND_ID)
+            }
         }.apply()
     }
 
@@ -54,5 +58,12 @@ object Prefs {
 
     fun setLastMessageId(context: Context, id: String) {
         prefs(context).edit().putString(KEY_LAST_MESSAGE_ID, id).apply()
+    }
+
+    fun lastCommandId(context: Context): String =
+        prefs(context).getString(KEY_LAST_COMMAND_ID, "") ?: ""
+
+    fun setLastCommandId(context: Context, id: String) {
+        prefs(context).edit().putString(KEY_LAST_COMMAND_ID, id).apply()
     }
 }

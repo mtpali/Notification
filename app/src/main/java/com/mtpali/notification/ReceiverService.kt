@@ -3,6 +3,8 @@ package com.mtpali.notification
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
+import android.app.RemoteInput
 import android.app.Service
 import android.content.Context
 import android.content.Intent
@@ -75,12 +77,14 @@ class ReceiverService : Service() {
             return
         }
 
-        val topic = CryptoBox.topic(pairCode)
         val lastId = Prefs.lastMessageId(this)
         val since = if (lastId.isBlank()) "10m" else lastId
         val request = Request.Builder()
-            .url("wss://ntfy.sh/$topic/ws?since=${URLEncoder.encode(since, "UTF-8")}")
-            .header("User-Agent", "Notification-Android/0.5")
+            .url(
+                "wss://ntfy.sh/${CryptoBox.topic(pairCode)}/ws?since=" +
+                    URLEncoder.encode(since, "UTF-8")
+            )
+            .header("User-Agent", "Notification-Android/0.6")
             .build()
 
         webSocket = client.newWebSocket(request, object : WebSocketListener() {
@@ -152,8 +156,10 @@ class ReceiverService : Service() {
             else -> "$sourceApp • $originalTitle"
         }
         val body = payload.text.ifBlank { sourceApp }
+        val stableKey = payload.notificationKey.ifBlank { relayId }
+        val localId = (payload.packageName + ":" + stableKey).hashCode()
 
-        val notification = Notification.Builder(this, CHANNEL_MIRRORED)
+        val builder = Notification.Builder(this, CHANNEL_MIRRORED)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(displayTitle)
             .setContentText(body)
@@ -161,12 +167,57 @@ class ReceiverService : Service() {
             .setStyle(Notification.BigTextStyle().setBigContentTitle(displayTitle).bigText(body))
             .setAutoCancel(true)
             .setWhen(payload.postTime.takeIf { it > 0 } ?: System.currentTimeMillis())
+
+        if (payload.canReply && payload.notificationKey.isNotBlank()) {
+            builder.addAction(replyAction(payload, localId))
+        }
+        if (payload.canMarkRead && payload.notificationKey.isNotBlank()) {
+            builder.addAction(markReadAction(payload, localId))
+        }
+
+        (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
+            .notify(localId, builder.build())
+    }
+
+    private fun replyAction(payload: MirrorPayload, localId: Int): Notification.Action {
+        val intent = commandIntent(ActionCommandReceiver.ACTION_REPLY, payload, localId)
+        val pendingIntent = PendingIntent.getBroadcast(
+            this,
+            (payload.notificationKey + ":reply").hashCode(),
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT
+        )
+        val remoteInput = RemoteInput.Builder(ActionCommandReceiver.KEY_REPLY_TEXT)
+            .setLabel("Reply")
             .build()
 
-        val stableKey = payload.notificationKey.ifBlank { relayId }
-        val id = (payload.packageName + ":" + stableKey).hashCode()
-        (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).notify(id, notification)
+        return Notification.Action.Builder(R.drawable.ic_notification, "Reply", pendingIntent)
+            .addRemoteInput(remoteInput)
+            .setAllowGeneratedReplies(true)
+            .setSemanticAction(Notification.Action.SEMANTIC_ACTION_REPLY)
+            .build()
     }
+
+    private fun markReadAction(payload: MirrorPayload, localId: Int): Notification.Action {
+        val intent = commandIntent(ActionCommandReceiver.ACTION_MARK_READ, payload, localId)
+        val pendingIntent = PendingIntent.getBroadcast(
+            this,
+            (payload.notificationKey + ":read").hashCode(),
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT
+        )
+        return Notification.Action.Builder(R.drawable.ic_notification, "Mark as read", pendingIntent)
+            .setSemanticAction(Notification.Action.SEMANTIC_ACTION_MARK_AS_READ)
+            .build()
+    }
+
+    private fun commandIntent(action: String, payload: MirrorPayload, localId: Int) =
+        Intent(this, ActionCommandReceiver::class.java).apply {
+            this.action = action
+            putExtra(ActionCommandReceiver.EXTRA_PACKAGE, payload.packageName)
+            putExtra(ActionCommandReceiver.EXTRA_NOTIFICATION_KEY, payload.notificationKey)
+            putExtra(ActionCommandReceiver.EXTRA_LOCAL_ID, localId)
+        }
 
     private fun createChannels() {
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager

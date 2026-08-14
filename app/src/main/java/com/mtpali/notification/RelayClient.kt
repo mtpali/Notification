@@ -10,14 +10,21 @@ object RelayClient {
     private val executor = Executors.newFixedThreadPool(2)
 
     fun publish(context: Context, payload: MirrorPayload) {
+        publishEncrypted(context, CryptoBox.topic(Prefs.pairCode(context)), payload.toJson())
+    }
+
+    fun publishCommand(context: Context, payload: CommandPayload) {
+        publishEncrypted(context, CryptoBox.commandTopic(Prefs.pairCode(context)), payload.toJson())
+    }
+
+    private fun publishEncrypted(context: Context, topic: String, plaintext: String) {
         val pairCode = Prefs.pairCode(context)
         if (!CryptoBox.isValidPairCode(pairCode)) return
 
         executor.execute {
             var connection: HttpURLConnection? = null
             try {
-                val encrypted = CryptoBox.encrypt(pairCode, payload.toJson())
-                val topic = CryptoBox.topic(pairCode)
+                val encrypted = CryptoBox.encrypt(pairCode, plaintext)
                 connection = URL("https://ntfy.sh/$topic").openConnection() as HttpURLConnection
                 connection.requestMethod = "POST"
                 connection.connectTimeout = 10_000
@@ -25,13 +32,12 @@ object RelayClient {
                 connection.doOutput = true
                 connection.setRequestProperty("Content-Type", "text/plain; charset=utf-8")
                 connection.setRequestProperty("Firebase", "no")
-                connection.setRequestProperty("User-Agent", "Notification-Android/0.5")
+                connection.setRequestProperty("User-Agent", "Notification-Android/0.6")
                 connection.outputStream.use {
                     it.write(encrypted.toByteArray(StandardCharsets.UTF_8))
                 }
                 connection.responseCode
             } catch (_: Exception) {
-                // Keep notification callbacks isolated from network failures.
             } finally {
                 connection?.disconnect()
             }

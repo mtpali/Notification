@@ -15,16 +15,20 @@ data class MirrorPayload(
     val title: String,
     val text: String,
     val postTime: Long,
-    val notificationKey: String
+    val notificationKey: String,
+    val canReply: Boolean = false,
+    val canMarkRead: Boolean = false
 ) {
     fun toJson(): String = JSONObject().apply {
-        put("v", 1)
+        put("v", 2)
         put("package", packageName)
         put("app", appName)
         put("title", title)
         put("text", text)
         put("postTime", postTime)
         put("key", notificationKey)
+        put("reply", canReply)
+        put("read", canMarkRead)
     }.toString()
 
     companion object {
@@ -36,7 +40,42 @@ data class MirrorPayload(
                 title = json.optString("title"),
                 text = json.optString("text"),
                 postTime = json.optLong("postTime"),
-                notificationKey = json.optString("key")
+                notificationKey = json.optString("key"),
+                canReply = json.optBoolean("reply"),
+                canMarkRead = json.optBoolean("read")
+            )
+        }
+    }
+}
+
+data class CommandPayload(
+    val type: String,
+    val packageName: String,
+    val notificationKey: String,
+    val text: String = "",
+    val createdAt: Long = System.currentTimeMillis()
+) {
+    fun toJson(): String = JSONObject().apply {
+        put("v", 1)
+        put("type", type)
+        put("package", packageName)
+        put("key", notificationKey)
+        put("text", text)
+        put("time", createdAt)
+    }.toString()
+
+    companion object {
+        const val TYPE_REPLY = "reply"
+        const val TYPE_MARK_READ = "read"
+
+        fun fromJson(raw: String): CommandPayload {
+            val json = JSONObject(raw)
+            return CommandPayload(
+                type = json.optString("type"),
+                packageName = json.optString("package"),
+                notificationKey = json.optString("key"),
+                text = json.optString("text"),
+                createdAt = json.optLong("time")
             )
         }
     }
@@ -51,10 +90,11 @@ object CryptoBox {
     fun isValidPairCode(pairCode: String): Boolean =
         pairCode.length == 6 && pairCode.all { it.isDigit() }
 
-    fun topic(pairCode: String): String {
-        val digest = sha256("notification-topic-v1:$pairCode")
-        return "notification-${encode(digest).take(32)}"
-    }
+    fun topic(pairCode: String): String =
+        topicFrom("notification-topic-v1:$pairCode", "notification-")
+
+    fun commandTopic(pairCode: String): String =
+        topicFrom("notification-command-topic-v1:$pairCode", "notification-cmd-")
 
     fun encrypt(pairCode: String, plaintext: String): String {
         val key = SecretKeySpec(sha256("notification-key-v1:$pairCode"), "AES")
@@ -64,7 +104,6 @@ object CryptoBox {
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.ENCRYPT_MODE, key, GCMParameterSpec(128, nonce))
         val encrypted = cipher.doFinal(plaintext.toByteArray(StandardCharsets.UTF_8))
-
         return encode(nonce + encrypted)
     }
 
@@ -80,6 +119,9 @@ object CryptoBox {
         cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(128, nonce))
         return String(cipher.doFinal(ciphertext), StandardCharsets.UTF_8)
     }
+
+    private fun topicFrom(value: String, prefix: String): String =
+        prefix + encode(sha256(value)).take(32)
 
     private fun sha256(value: String): ByteArray =
         MessageDigest.getInstance("SHA-256")
