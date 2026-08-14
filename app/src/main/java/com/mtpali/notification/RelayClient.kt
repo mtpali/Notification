@@ -4,23 +4,14 @@ import android.content.Context
 import java.net.HttpURLConnection
 import java.net.URL
 import java.nio.charset.StandardCharsets
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 import java.util.concurrent.Executors
 
 object RelayClient {
     private val executor = Executors.newFixedThreadPool(2)
 
     fun publish(context: Context, payload: MirrorPayload) {
-        val appContext = context.applicationContext
-        val pairCode = Prefs.pairCode(appContext)
-        if (pairCode.isBlank()) {
-            Prefs.setLastPublish(appContext, "failed: Pair Code is empty")
-            return
-        }
-
-        Prefs.setLastPublish(appContext, "sending at ${timeNow()}")
+        val pairCode = Prefs.pairCode(context)
+        if (!CryptoBox.isValidPairCode(pairCode)) return
 
         executor.execute {
             var connection: HttpURLConnection? = null
@@ -34,27 +25,16 @@ object RelayClient {
                 connection.doOutput = true
                 connection.setRequestProperty("Content-Type", "text/plain; charset=utf-8")
                 connection.setRequestProperty("Firebase", "no")
-                connection.setRequestProperty("User-Agent", "Notification-Android/0.3")
-
-                connection.outputStream.use { output ->
-                    output.write(encrypted.toByteArray(StandardCharsets.UTF_8))
+                connection.setRequestProperty("User-Agent", "Notification-Android/0.5")
+                connection.outputStream.use {
+                    it.write(encrypted.toByteArray(StandardCharsets.UTF_8))
                 }
-
-                val code = connection.responseCode
-                if (code in 200..299) {
-                    Prefs.setLastPublish(appContext, "SUCCESS HTTP $code at ${timeNow()}")
-                } else {
-                    Prefs.setLastPublish(appContext, "FAILED HTTP $code at ${timeNow()}")
-                }
-            } catch (e: Exception) {
-                val reason = e.message?.take(100) ?: e.javaClass.simpleName
-                Prefs.setLastPublish(appContext, "FAILED ${e.javaClass.simpleName}: $reason")
+                connection.responseCode
+            } catch (_: Exception) {
+                // Keep notification callbacks isolated from network failures.
             } finally {
                 connection?.disconnect()
             }
         }
     }
-
-    private fun timeNow(): String =
-        SimpleDateFormat("HH:mm:ss", Locale.US).format(Date())
 }
