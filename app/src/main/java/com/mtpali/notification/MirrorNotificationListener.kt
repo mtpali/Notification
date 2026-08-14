@@ -63,15 +63,34 @@ class MirrorNotificationListener : NotificationListenerService() {
     }
 
     override fun onListenerDisconnected() {
+        val shouldRebind = shouldKeepListenerBound()
         listenerReady = false
         if (activeInstance === this) activeInstance = null
         actionableKeys.clear()
         stopCommandSocket()
         stopHiddenReceiver()
         super.onListenerDisconnected()
+        if (shouldRebind) requestSelfRebind()
+    }
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        super.onTaskRemoved(rootIntent)
+        if (!shouldKeepListenerBound()) return
+
+        if (listenerReady && Prefs.mode(this) == Prefs.MODE_RECEIVER &&
+            Prefs.receiverTransport(this) == Prefs.RECEIVER_HIDDEN &&
+            Prefs.receiverEnabled(this)
+        ) {
+            mainHandler.post {
+                stopReceiverSocket()
+                refreshState()
+            }
+        }
+        requestSelfRebind()
     }
 
     override fun onDestroy() {
+        val shouldRebind = shouldKeepListenerBound()
         listenerReady = false
         if (activeInstance === this) activeInstance = null
         actionableKeys.clear()
@@ -83,6 +102,7 @@ class MirrorNotificationListener : NotificationListenerService() {
         commandClient = null
         receiverClient = null
         super.onDestroy()
+        if (shouldRebind) requestSelfRebind()
     }
 
     override fun onNotificationPosted(sbn: StatusBarNotification?) {
@@ -153,6 +173,34 @@ class MirrorNotificationListener : NotificationListenerService() {
         }
     }
 
+    private fun forceRefreshFromUi() {
+        if (!listenerReady) return
+        if (Prefs.mode(this) == Prefs.MODE_RECEIVER &&
+            Prefs.receiverTransport(this) == Prefs.RECEIVER_HIDDEN &&
+            Prefs.receiverEnabled(this)
+        ) {
+            stopReceiverSocket()
+        }
+        refreshState()
+    }
+
+    private fun shouldKeepListenerBound(): Boolean {
+        if (Prefs.mode(this) == Prefs.MODE_SENDER) return true
+        return Prefs.mode(this) == Prefs.MODE_RECEIVER &&
+            Prefs.receiverTransport(this) == Prefs.RECEIVER_HIDDEN &&
+            Prefs.receiverEnabled(this) &&
+            CryptoBox.isValidPairCode(Prefs.pairCode(this))
+    }
+
+    private fun requestSelfRebind() {
+        try {
+            NotificationListenerService.requestRebind(
+                ComponentName(this, MirrorNotificationListener::class.java)
+            )
+        } catch (_: Exception) {
+        }
+    }
+
     private fun shouldForward(sbn: StatusBarNotification): Boolean {
         if (sbn.packageName == packageName) return false
         return Prefs.forwardAllApps(this) || sbn.packageName in Prefs.selectedApps(this)
@@ -210,7 +258,7 @@ class MirrorNotificationListener : NotificationListenerService() {
                 "wss://ntfy.sh/${CryptoBox.commandTopic(pairCode)}/ws?since=" +
                     URLEncoder.encode(since, "UTF-8")
             )
-            .header("User-Agent", "Notification-Android/0.7")
+            .header("User-Agent", "Notification-Android/0.7.1")
             .build()
 
         commandSocket = client.newWebSocket(request, object : WebSocketListener() {
@@ -389,7 +437,7 @@ class MirrorNotificationListener : NotificationListenerService() {
                 "wss://ntfy.sh/${CryptoBox.topic(pairCode)}/ws?since=" +
                     URLEncoder.encode(since, "UTF-8")
             )
-            .header("User-Agent", "Notification-Android/0.7")
+            .header("User-Agent", "Notification-Android/0.7.1")
             .build()
 
         receiverSocket = client.newWebSocket(request, object : WebSocketListener() {
@@ -467,7 +515,7 @@ class MirrorNotificationListener : NotificationListenerService() {
         fun refresh(context: Context) {
             val instance = activeInstance
             if (instance != null && instance.listenerReady) {
-                instance.mainHandler.post { instance.refreshState() }
+                instance.mainHandler.post { instance.forceRefreshFromUi() }
             } else {
                 try {
                     NotificationListenerService.requestRebind(
