@@ -24,6 +24,7 @@ class MirrorNotificationListener : NotificationListenerService() {
     private val mainHandler = Handler(Looper.getMainLooper())
     private val reconnectExecutor = Executors.newSingleThreadScheduledExecutor()
     private val reconnectScheduled = AtomicBoolean(false)
+    private val actionableKeys = HashSet<String>()
 
     @Volatile private var listenerReady = false
     @Volatile private var commandSocket: WebSocket? = null
@@ -33,17 +34,20 @@ class MirrorNotificationListener : NotificationListenerService() {
     override fun onListenerConnected() {
         super.onListenerConnected()
         listenerReady = true
-        ensureCommandSocket()
+        rebuildActionableKeys()
+        updateCommandSocketState()
     }
 
     override fun onListenerDisconnected() {
         listenerReady = false
+        actionableKeys.clear()
         stopCommandSocket()
         super.onListenerDisconnected()
     }
 
     override fun onDestroy() {
         listenerReady = false
+        actionableKeys.clear()
         stopCommandSocket()
         reconnectExecutor.shutdownNow()
         commandClient?.dispatcher?.executorService?.shutdown()
@@ -54,22 +58,34 @@ class MirrorNotificationListener : NotificationListenerService() {
 
     override fun onNotificationPosted(sbn: StatusBarNotification?) {
         if (sbn == null) return
-        if (Prefs.mode(this) != Prefs.MODE_SENDER) return
+        if (Prefs.mode(this) != Prefs.MODE_SENDER ||
+            !CryptoBox.isValidPairCode(Prefs.pairCode(this))
+        ) {
+            actionableKeys.clear()
+            updateCommandSocketState()
+            return
+        }
 
-        val pairCode = Prefs.pairCode(this)
-        if (!CryptoBox.isValidPairCode(pairCode)) return
-        ensureCommandSocket()
-
-        if (sbn.packageName == packageName) return
-        if (!Prefs.forwardAllApps(this) && sbn.packageName !in Prefs.selectedApps(this)) return
+        if (!shouldForward(sbn)) {
+            actionableKeys.remove(sbn.key)
+            updateCommandSocketState()
+            return
+        }
 
         val notification = sbn.notification ?: return
+        val actions = notification.actions ?: emptyArray()
+        val canReply = actions.any(::isReplyAction)
+        val canMarkRead = actions.any(::isMarkReadAction)
+
+        if (canReply || canMarkRead) actionableKeys.add(sbn.key)
+        else actionableKeys.remove(sbn.key)
+        updateCommandSocketState()
+
         val extras = notification.extras
         val title = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString().orEmpty()
         val bigText = extras.getCharSequence(Notification.EXTRA_BIG_TEXT)?.toString().orEmpty()
         val normalText = extras.getCharSequence(Notification.EXTRA_TEXT)?.toString().orEmpty()
         val text = bigText.ifBlank { normalText }
-        val actions = notification.actions ?: emptyArray()
 
         val appName = try {
             val info = packageManager.getApplicationInfo(sbn.packageName, 0)
@@ -87,10 +103,37 @@ class MirrorNotificationListener : NotificationListenerService() {
                 text = text,
                 postTime = sbn.postTime,
                 notificationKey = sbn.key,
-                canReply = actions.any(::isReplyAction),
-                canMarkRead = actions.any(::isMarkReadAction)
+                canReply = canReply,
+                canMarkRead = canMarkRead
             )
         )
+    }
+
+    override fun onNotificationRemoved(sbn: StatusBarNotification?) {
+        if (sbn != null && actionableKeys.remove(sbn.key)) updateCommandSocketState()
+    }
+
+    private fun shouldForward(sbn: StatusBarNotification): Boolean {
+        if (sbn.packageName == packageName) return false
+        return Prefs.forwardAllApps(this) || sbn.packageName in Prefs.selectedApps(this)
+    }
+
+    private fun rebuildActionableKeys() {
+        actionableKeys.clear()
+        if (Prefs.mode(this) != Prefs.MODE_SENDER ||
+            !CryptoBox.isValidPairCode(Prefs.pairCode(this))
+        ) return
+
+        try {
+            activeNotifications.forEach { sbn ->
+                if (!shouldForward(sbn)) return@forEach
+                val actions = sbn.notification?.actions ?: return@forEach
+                if (actions.any(::isReplyAction) || actions.any(::isMarkReadAction)) {
+                    actionableKeys.add(sbn.key)
+                }
+            }
+        } catch (_: Exception) {
+        }
     }
 
     private fun isReplyAction(action: Notification.Action): Boolean =
@@ -102,8 +145,12 @@ class MirrorNotificationListener : NotificationListenerService() {
         return title.contains("mark as read") || title == "read" || title.contains("خوانده")
     }
 
+    private fun updateCommandSocketState() {
+        if (actionableKeys.isEmpty()) stopCommandSocket() else ensureCommandSocket()
+    }
+
     private fun ensureCommandSocket() {
-        if (!listenerReady) return
+        if (!listenerReady || actionableKeys.isEmpty()) return
 
         val pairCode = Prefs.pairCode(this)
         if (Prefs.mode(this) != Prefs.MODE_SENDER || !CryptoBox.isValidPairCode(pairCode)) {
@@ -142,25 +189,28 @@ class MirrorNotificationListener : NotificationListenerService() {
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                 if (commandSocket === webSocket) commandSocket = null
-                if (listenerReady && Prefs.mode(this@MirrorNotificationListener) == Prefs.MODE_SENDER) {
-                    scheduleReconnect()
-                }
+                if (listenerReady && actionableKeys.isNotEmpty() &&
+                    Prefs.mode(this@MirrorNotificationListener) == Prefs.MODE_SENDER
+                ) scheduleReconnect()
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 if (commandSocket === webSocket) commandSocket = null
-                if (listenerReady && Prefs.mode(this@MirrorNotificationListener) == Prefs.MODE_SENDER) {
-                    scheduleReconnect()
-                }
+                if (listenerReady && actionableKeys.isNotEmpty() &&
+                    Prefs.mode(this@MirrorNotificationListener) == Prefs.MODE_SENDER
+                ) scheduleReconnect()
             }
         })
     }
 
     private fun scheduleReconnect() {
-        if (!listenerReady || !reconnectScheduled.compareAndSet(false, true)) return
+        if (!listenerReady || actionableKeys.isEmpty() ||
+            !reconnectScheduled.compareAndSet(false, true)
+        ) return
+
         reconnectExecutor.schedule({
             reconnectScheduled.set(false)
-            if (listenerReady) ensureCommandSocket()
+            if (listenerReady && actionableKeys.isNotEmpty()) ensureCommandSocket()
         }, 2, TimeUnit.SECONDS)
     }
 
@@ -184,7 +234,9 @@ class MirrorNotificationListener : NotificationListenerService() {
 
             val command = CommandPayload.fromJson(CryptoBox.decrypt(pairCode, encrypted))
             val now = System.currentTimeMillis()
-            if (command.createdAt <= 0L || command.createdAt > now + 60_000L || now - command.createdAt > 10 * 60_000L) {
+            if (command.createdAt <= 0L || command.createdAt > now + 60_000L ||
+                now - command.createdAt > 10 * 60_000L
+            ) {
                 if (id.isNotBlank()) Prefs.setLastCommandId(this, id)
                 return
             }
