@@ -1,0 +1,12 @@
+{
+  "name": "notification-fcm-relay",
+  "private": true,
+  "version": "0.8.0",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}
