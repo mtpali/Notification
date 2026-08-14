@@ -26,7 +26,7 @@ object Prefs {
     const val RECEIVER_PUSH = "push"
 
     const val DEFAULT_RELAY_URL =
-        "https://europe-west1-notification-2515e.cloudfunctions.net/relay"
+        "https://notification.mhdvi45.workers.dev"
 
     private fun prefs(context: Context) =
         context.getSharedPreferences(FILE, Context.MODE_PRIVATE)
