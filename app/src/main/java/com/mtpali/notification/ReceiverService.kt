@@ -7,24 +7,38 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.os.IBinder
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.Response
+import okhttp3.WebSocket
+import okhttp3.WebSocketListener
 import org.json.JSONObject
-import java.net.HttpURLConnection
-import java.net.URL
 import java.net.URLEncoder
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 class ReceiverService : Service() {
-    private val executor = Executors.newSingleThreadExecutor()
+    private lateinit var client: OkHttpClient
+    private val reconnectExecutor = Executors.newSingleThreadScheduledExecutor()
+    private val reconnectScheduled = AtomicBoolean(false)
 
     @Volatile
     private var running = false
 
     @Volatile
-    private var activeConnection: HttpURLConnection? = null
+    private var webSocket: WebSocket? = null
 
     override fun onCreate() {
         super.onCreate()
         createChannels()
+        client = OkHttpClient.Builder()
+            .pingInterval(25, TimeUnit.SECONDS)
+            .retryOnConnectionFailure(true)
+            .build()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -33,16 +47,19 @@ class ReceiverService : Service() {
             return START_NOT_STICKY
         }
 
-        startForeground(SERVICE_NOTIFICATION_ID, serviceNotification())
+        startForeground(SERVICE_NOTIFICATION_ID, serviceNotification("Connecting…"))
 
-        if (Prefs.mode(this) != Prefs.MODE_RECEIVER || Prefs.pairCode(this).isBlank()) {
+        if (Prefs.mode(this) != Prefs.MODE_RECEIVER ||
+            !CryptoBox.isValidPairCode(Prefs.pairCode(this))
+        ) {
             stopReceiver()
             return START_NOT_STICKY
         }
 
         if (!running) {
             running = true
-            executor.execute { receiveLoop() }
+            Prefs.setReceiverStatus(this, "connecting at ${timeNow()}")
+            connectWebSocket()
         }
 
         return START_STICKY
@@ -52,57 +69,88 @@ class ReceiverService : Service() {
 
     override fun onDestroy() {
         running = false
-        activeConnection?.disconnect()
-        executor.shutdownNow()
+        webSocket?.cancel()
+        webSocket = null
+        reconnectExecutor.shutdownNow()
+        if (::client.isInitialized) {
+            client.dispatcher.executorService.shutdown()
+            client.connectionPool.evictAll()
+        }
         super.onDestroy()
     }
 
-    private fun receiveLoop() {
-        while (running) {
-            val pairCode = Prefs.pairCode(this)
-            if (pairCode.isBlank() || Prefs.mode(this) != Prefs.MODE_RECEIVER) break
+    private fun connectWebSocket() {
+        if (!running || webSocket != null) return
 
-            var connection: HttpURLConnection? = null
-            try {
-                val topic = CryptoBox.topic(pairCode)
-                val lastId = Prefs.lastMessageId(this)
-                val since = if (lastId.isBlank()) "10m" else lastId
-                val encodedSince = URLEncoder.encode(since, "UTF-8")
-                val url = URL("https://ntfy.sh/$topic/json?since=$encodedSince")
-
-                connection = url.openConnection() as HttpURLConnection
-                activeConnection = connection
-                connection.requestMethod = "GET"
-                connection.connectTimeout = 15_000
-                // ntfy sends keepalives on a long-lived stream, so keep this above that interval.
-                connection.readTimeout = 90_000
-                connection.setRequestProperty("Accept", "application/x-ndjson, application/json")
-
-                if (connection.responseCode !in 200..299) {
-                    throw IllegalStateException("Relay HTTP ${connection.responseCode}")
-                }
-
-                connection.inputStream.bufferedReader().useLines { lines ->
-                    lines.forEach { line ->
-                        if (!running) return@forEach
-                        handleRelayLine(pairCode, line)
-                    }
-                }
-            } catch (_: Exception) {
-                // Reconnect below. Network changes and mobile handoffs are expected.
-            } finally {
-                if (activeConnection === connection) activeConnection = null
-                connection?.disconnect()
-            }
-
-            if (running) {
-                try {
-                    Thread.sleep(3_000)
-                } catch (_: InterruptedException) {
-                    break
-                }
-            }
+        val pairCode = Prefs.pairCode(this)
+        if (!CryptoBox.isValidPairCode(pairCode) || Prefs.mode(this) != Prefs.MODE_RECEIVER) {
+            stopReceiver()
+            return
         }
+
+        val topic = CryptoBox.topic(pairCode)
+        val lastId = Prefs.lastMessageId(this)
+        val since = if (lastId.isBlank()) "10m" else lastId
+        val encodedSince = URLEncoder.encode(since, "UTF-8")
+        val request = Request.Builder()
+            .url("wss://ntfy.sh/$topic/ws?since=$encodedSince")
+            .header("User-Agent", "Notification-Android/0.3")
+            .build()
+
+        Prefs.setReceiverStatus(this, "connecting WebSocket at ${timeNow()}")
+
+        webSocket = client.newWebSocket(request, object : WebSocketListener() {
+            override fun onOpen(webSocket: WebSocket, response: Response) {
+                Prefs.setReceiverStatus(this@ReceiverService, "CONNECTED WebSocket at ${timeNow()}")
+                updateServiceNotification("Connected • WebSocket")
+            }
+
+            override fun onMessage(webSocket: WebSocket, text: String) {
+                handleRelayLine(pairCode, text)
+            }
+
+            override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                webSocket.close(code, reason)
+            }
+
+            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                if (this@ReceiverService.webSocket === webSocket) {
+                    this@ReceiverService.webSocket = null
+                }
+                if (running) {
+                    Prefs.setReceiverStatus(
+                        this@ReceiverService,
+                        "disconnected ($code), reconnecting at ${timeNow()}"
+                    )
+                    updateServiceNotification("Disconnected • reconnecting")
+                    scheduleReconnect()
+                }
+            }
+
+            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                if (this@ReceiverService.webSocket === webSocket) {
+                    this@ReceiverService.webSocket = null
+                }
+                if (running) {
+                    val reason = t.message?.take(80) ?: t.javaClass.simpleName
+                    Prefs.setReceiverStatus(
+                        this@ReceiverService,
+                        "FAILED ${t.javaClass.simpleName}: $reason"
+                    )
+                    updateServiceNotification("Connection lost • retrying")
+                    scheduleReconnect()
+                }
+            }
+        })
+    }
+
+    private fun scheduleReconnect() {
+        if (!running || !reconnectScheduled.compareAndSet(false, true)) return
+
+        reconnectExecutor.schedule({
+            reconnectScheduled.set(false)
+            if (running) connectWebSocket()
+        }, 2, TimeUnit.SECONDS)
     }
 
     private fun handleRelayLine(pairCode: String, line: String) {
@@ -123,8 +171,9 @@ class ReceiverService : Service() {
             showMirroredNotification(payload, id)
 
             if (id.isNotBlank()) Prefs.setLastMessageId(this, id)
+            Prefs.setLastReceive(this, "${payload.appName}: ${payload.title.take(50)} at ${timeNow()}")
         } catch (_: Exception) {
-            // Ignore malformed messages or traffic encrypted with another Pair Code.
+            // Ignore keepalives, malformed messages, and traffic encrypted with another Pair Code.
         }
     }
 
@@ -173,20 +222,30 @@ class ReceiverService : Service() {
         )
     }
 
-    private fun serviceNotification(): Notification =
+    private fun serviceNotification(status: String): Notification =
         Notification.Builder(this, CHANNEL_SERVICE)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle("Notification receiver")
-            .setContentText("Encrypted Internet receiver is active")
+            .setContentText(status)
             .setOngoing(true)
             .build()
 
+    private fun updateServiceNotification(status: String) {
+        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        manager.notify(SERVICE_NOTIFICATION_ID, serviceNotification(status))
+    }
+
     private fun stopReceiver() {
         running = false
-        activeConnection?.disconnect()
+        webSocket?.close(1000, "Receiver stopped")
+        webSocket = null
+        Prefs.setReceiverStatus(this, "stopped at ${timeNow()}")
         stopForeground(true)
         stopSelf()
     }
+
+    private fun timeNow(): String =
+        SimpleDateFormat("HH:mm:ss", Locale.US).format(Date())
 
     companion object {
         const val ACTION_STOP = "com.mtpali.notification.STOP_RECEIVER"
