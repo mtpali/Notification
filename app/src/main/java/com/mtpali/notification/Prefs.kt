@@ -10,9 +10,14 @@ object Prefs {
     private const val KEY_SELECTED_APPS = "selected_apps"
     private const val KEY_LAST_MESSAGE_ID = "last_message_id"
     private const val KEY_LAST_COMMAND_ID = "last_command_id"
+    private const val KEY_RECEIVER_TRANSPORT = "receiver_transport"
+    private const val KEY_RECEIVER_ENABLED = "receiver_enabled"
 
     const val MODE_SENDER = "sender"
     const val MODE_RECEIVER = "receiver"
+
+    const val RECEIVER_STABLE = "stable"
+    const val RECEIVER_HIDDEN = "hidden"
 
     private fun prefs(context: Context) =
         context.getSharedPreferences(FILE, Context.MODE_PRIVATE)
@@ -37,6 +42,26 @@ object Prefs {
                 remove(KEY_LAST_COMMAND_ID)
             }
         }.apply()
+    }
+
+    fun receiverTransport(context: Context): String =
+        prefs(context).getString(KEY_RECEIVER_TRANSPORT, RECEIVER_STABLE) ?: RECEIVER_STABLE
+
+    fun setReceiverTransport(context: Context, value: String) {
+        prefs(context).edit().putString(KEY_RECEIVER_TRANSPORT, value).apply()
+    }
+
+    fun receiverEnabled(context: Context): Boolean {
+        val values = prefs(context)
+        return if (values.contains(KEY_RECEIVER_ENABLED)) {
+            values.getBoolean(KEY_RECEIVER_ENABLED, false)
+        } else {
+            mode(context) == MODE_RECEIVER
+        }
+    }
+
+    fun setReceiverEnabled(context: Context, value: Boolean) {
+        prefs(context).edit().putBoolean(KEY_RECEIVER_ENABLED, value).apply()
     }
 
     fun forwardAllApps(context: Context): Boolean =
