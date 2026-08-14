@@ -188,19 +188,29 @@ class MirrorNotificationListener : NotificationListenerService() {
                 instance.mainHandler.post { instance.refreshState() }
                 return
             }
-            requestRebind(context)
+
+            if (shouldRequestBinding(context)) requestRebind(context)
         }
 
         fun dispatchCommand(context: Context, command: CommandPayload) {
             val appContext = context.applicationContext
-            Prefs.setPendingCommand(appContext, command.toJson())
+            if (Prefs.mode(appContext) != Prefs.MODE_SENDER) return
 
+            Prefs.setPendingCommand(appContext, command.toJson())
             val instance = activeInstance
             if (instance != null && instance.listenerReady) {
                 instance.mainHandler.post { instance.drainPendingCommand() }
             } else {
                 requestRebind(appContext)
             }
+        }
+
+        private fun shouldRequestBinding(context: Context): Boolean {
+            if (Prefs.mode(context) == Prefs.MODE_SENDER) return true
+            return Prefs.mode(context) == Prefs.MODE_RECEIVER &&
+                Prefs.receiverTransport(context) == Prefs.RECEIVER_HIDDEN &&
+                Prefs.receiverEnabled(context) &&
+                CryptoBox.isValidPairCode(Prefs.pairCode(context))
         }
 
         private fun requestRebind(context: Context) {
