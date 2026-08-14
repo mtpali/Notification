@@ -12,12 +12,15 @@ object Prefs {
     private const val KEY_LAST_COMMAND_ID = "last_command_id"
     private const val KEY_RECEIVER_TRANSPORT = "receiver_transport"
     private const val KEY_RECEIVER_ENABLED = "receiver_enabled"
+    private const val KEY_FCM_TOKEN = "fcm_token"
+    private const val KEY_FCM_SUBSCRIBED_TOPIC = "fcm_subscribed_topic"
 
     const val MODE_SENDER = "sender"
     const val MODE_RECEIVER = "receiver"
 
     const val RECEIVER_STABLE = "stable"
     const val RECEIVER_HIDDEN = "hidden"
+    const val RECEIVER_PUSH = "push"
 
     private fun prefs(context: Context) =
         context.getSharedPreferences(FILE, Context.MODE_PRIVATE)
@@ -62,6 +65,20 @@ object Prefs {
 
     fun setReceiverEnabled(context: Context, value: Boolean) {
         prefs(context).edit().putBoolean(KEY_RECEIVER_ENABLED, value).apply()
+    }
+
+    fun fcmToken(context: Context): String =
+        prefs(context).getString(KEY_FCM_TOKEN, "") ?: ""
+
+    fun setFcmToken(context: Context, value: String) {
+        prefs(context).edit().putString(KEY_FCM_TOKEN, value).apply()
+    }
+
+    fun fcmSubscribedTopic(context: Context): String =
+        prefs(context).getString(KEY_FCM_SUBSCRIBED_TOPIC, "") ?: ""
+
+    fun setFcmSubscribedTopic(context: Context, value: String) {
+        prefs(context).edit().putString(KEY_FCM_SUBSCRIBED_TOPIC, value).apply()
     }
 
     fun forwardAllApps(context: Context): Boolean =
