@@ -3,6 +3,8 @@ package com.mtpali.notification
 import android.app.Activity
 import android.content.Intent
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.provider.Settings
 import android.text.InputType
 import android.widget.Button
@@ -20,6 +22,7 @@ class MainActivity : Activity() {
     private lateinit var pairInput: EditText
     private lateinit var statusText: TextView
     private lateinit var filterText: TextView
+    private val handler = Handler(Looper.getMainLooper())
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -98,9 +101,39 @@ class MainActivity : Activity() {
             }
         })
 
+        root.addView(Button(this).apply {
+            text = "Send Test Notification"
+            setOnClickListener {
+                if (!saveSettings(showToast = false)) return@setOnClickListener
+                if (Prefs.mode(this@MainActivity) != Prefs.MODE_SENDER) {
+                    Toast.makeText(this@MainActivity, "Select Sender first", Toast.LENGTH_SHORT).show()
+                    return@setOnClickListener
+                }
+                if (!CryptoBox.isValidPairCode(Prefs.pairCode(this@MainActivity))) {
+                    Toast.makeText(this@MainActivity, "Enter a 6-digit Pair Code first", Toast.LENGTH_SHORT).show()
+                    return@setOnClickListener
+                }
+
+                val now = System.currentTimeMillis()
+                RelayClient.publish(
+                    applicationContext,
+                    MirrorPayload(
+                        packageName = packageName,
+                        appName = "Notification",
+                        title = "Test notification",
+                        text = "Internet relay test from Sender",
+                        postTime = now,
+                        notificationKey = "test-$now"
+                    )
+                )
+                Toast.makeText(this@MainActivity, "Test sent", Toast.LENGTH_SHORT).show()
+                handler.postDelayed({ updateStatus() }, 2000)
+            }
+        })
+
         root.addView(sectionTitle("4. Receiver setup"))
         root.addView(TextView(this).apply {
-            text = "Receiver mode keeps a small foreground status notification visible so Android 9/10 can maintain the Internet stream."
+            text = "Receiver uses a persistent WebSocket connection for low-latency delivery."
         })
         root.addView(Button(this).apply {
             text = "Start Receiver"
@@ -119,7 +152,7 @@ class MainActivity : Activity() {
 
                 startForegroundService(Intent(this@MainActivity, ReceiverService::class.java))
                 Toast.makeText(this@MainActivity, "Receiver started", Toast.LENGTH_SHORT).show()
-                updateStatus()
+                handler.postDelayed({ updateStatus() }, 1500)
             }
         })
         root.addView(Button(this).apply {
@@ -127,10 +160,16 @@ class MainActivity : Activity() {
             setOnClickListener {
                 stopService(Intent(this@MainActivity, ReceiverService::class.java))
                 Toast.makeText(this@MainActivity, "Receiver stopped", Toast.LENGTH_SHORT).show()
+                handler.postDelayed({ updateStatus() }, 500)
             }
         })
 
-        root.addView(sectionTitle("Status"))
+        root.addView(sectionTitle("Diagnostics"))
+        root.addView(Button(this).apply {
+            text = "Refresh Status"
+            setOnClickListener { updateStatus() }
+        })
+
         statusText = TextView(this).apply { textSize = 15f }
         root.addView(statusText)
         updateStatus()
@@ -188,7 +227,16 @@ class MainActivity : Activity() {
         }
         val access = if (notificationAccess) "enabled" else "not enabled"
 
-        statusText.text = "Role: $role\nPair Code: $paired\nNotification Access: $access"
+        statusText.text = buildString {
+            append("Role: $role\n")
+            append("Pair Code: $paired\n")
+            append("Notification Access: $access\n\n")
+            append("Sender listener: ${Prefs.listenerStatus(this@MainActivity)}\n")
+            append("Last captured: ${Prefs.lastCapture(this@MainActivity)}\n")
+            append("Last publish: ${Prefs.lastPublish(this@MainActivity)}\n\n")
+            append("Receiver: ${Prefs.receiverStatus(this@MainActivity)}\n")
+            append("Last received: ${Prefs.lastReceive(this@MainActivity)}")
+        }
     }
 
     private fun sectionTitle(text: String): TextView = TextView(this).apply {
