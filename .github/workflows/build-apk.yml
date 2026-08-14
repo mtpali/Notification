@@ -2,13 +2,35 @@ name: Build APK
 
 on:
   push:
-    branches: [main]
+    branches: [main, agent/fcm-v0.8]
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
+  functions-check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: functions/package.json
+
+      - name: Install Firebase relay dependencies
+        working-directory: functions
+        run: npm install --ignore-scripts
+
+      - name: Check Firebase relay syntax
+        working-directory: functions
+        run: npm run check
+
   build:
     runs-on: ubuntu-latest
 
