@@ -3,9 +3,11 @@
 const crypto = require("node:crypto");
 const {onRequest} = require("firebase-functions/v2/https");
 const {defineSecret} = require("firebase-functions/params");
+const {requiresRole} = require("firebase-functions/v2");
 const {initializeApp} = require("firebase-admin/app");
 const {getMessaging} = require("firebase-admin/messaging");
 
+requiresRole("roles/firebasecloudmessaging.admin");
 initializeApp();
 
 const RELAY_TOKEN = defineSecret("RELAY_TOKEN");
@@ -19,6 +21,8 @@ exports.relay = onRequest(
     timeoutSeconds: 15,
     minInstances: 0,
     maxInstances: 3,
+    invoker: "public",
+    cors: false,
     secrets: [RELAY_TOKEN],
   },
   async (request, response) => {
