@@ -2,7 +2,7 @@ name: Build APK
 
 on:
   push:
-    branches: [main]
+    branches: [main, agent/hidden-receiver-v0.7]
   workflow_dispatch:
 
 permissions:
