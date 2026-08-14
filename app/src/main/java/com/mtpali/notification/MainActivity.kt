@@ -133,17 +133,25 @@ class MainActivity : Activity() {
                     return@setOnClickListener
                 }
 
-                Prefs.setReceiverEnabled(this@MainActivity, true)
-                applyReceiverRuntime()
-
                 if (Prefs.receiverTransport(this@MainActivity) == Prefs.RECEIVER_HIDDEN &&
                     !hasNotificationAccess()
                 ) {
+                    Prefs.setReceiverEnabled(this@MainActivity, false)
                     toast("Enable Notification Access for Hidden")
                     openNotificationAccess()
-                } else {
-                    toast(if (Prefs.receiverTransport(this@MainActivity) == Prefs.RECEIVER_HIDDEN) "Hidden started" else "Started")
+                    updateInfo()
+                    return@setOnClickListener
                 }
+
+                Prefs.setReceiverEnabled(this@MainActivity, true)
+                applyReceiverRuntime()
+                toast(
+                    if (Prefs.receiverTransport(this@MainActivity) == Prefs.RECEIVER_HIDDEN) {
+                        "Hidden started"
+                    } else {
+                        "Started"
+                    }
+                )
                 updateInfo()
             }
         })
@@ -167,7 +175,8 @@ class MainActivity : Activity() {
         super.onResume()
         if (Prefs.mode(this) == Prefs.MODE_RECEIVER &&
             Prefs.receiverTransport(this) == Prefs.RECEIVER_HIDDEN &&
-            Prefs.receiverEnabled(this)
+            Prefs.receiverEnabled(this) &&
+            hasNotificationAccess()
         ) {
             MirrorNotificationListener.refresh(this)
         }
@@ -199,8 +208,6 @@ class MainActivity : Activity() {
             Prefs.setReceiverEnabled(this, false)
             stopService(Intent(this, ReceiverService::class.java))
             MirrorNotificationListener.refresh(this)
-        } else if (Prefs.receiverEnabled(this)) {
-            applyReceiverRuntime()
         }
 
         if (showToast) toast("Saved")
