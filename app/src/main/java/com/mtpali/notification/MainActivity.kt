@@ -1,6 +1,9 @@
 package com.mtpali.notification
 
 import android.app.Activity
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
 import android.os.Bundle
 import android.provider.Settings
@@ -17,6 +20,7 @@ import android.widget.Toast
 class MainActivity : Activity() {
     private lateinit var senderRadio: RadioButton
     private lateinit var receiverRadio: RadioButton
+    private lateinit var pushRadio: RadioButton
     private lateinit var stableRadio: RadioButton
     private lateinit var hiddenRadio: RadioButton
     private lateinit var pairInput: EditText
@@ -107,22 +111,31 @@ class MainActivity : Activity() {
 
         root.addView(sectionTitle("Receiver"))
         val receiverTypeGroup = RadioGroup(this).apply { orientation = RadioGroup.VERTICAL }
+        pushRadio = RadioButton(this).apply { text = "Push (FCM) • lowest battery" }
         stableRadio = RadioButton(this).apply { text = "Stable • persistent status" }
-        hiddenRadio = RadioButton(this).apply { text = "Hidden • no persistent status" }
+        hiddenRadio = RadioButton(this).apply { text = "Hidden • experimental background service" }
+        receiverTypeGroup.addView(pushRadio)
         receiverTypeGroup.addView(stableRadio)
         receiverTypeGroup.addView(hiddenRadio)
         root.addView(receiverTypeGroup)
 
-        if (Prefs.receiverTransport(this) == Prefs.RECEIVER_HIDDEN) hiddenRadio.isChecked = true
-        else stableRadio.isChecked = true
+        when (Prefs.receiverTransport(this)) {
+            Prefs.RECEIVER_PUSH -> pushRadio.isChecked = true
+            Prefs.RECEIVER_HIDDEN -> hiddenRadio.isChecked = true
+            else -> stableRadio.isChecked = true
+        }
 
         root.addView(TextView(this).apply {
-            text = "Hidden requires Notification Access on the Receiver."
+            text = "Push is recommended for lowest battery use. Notification Access is only required for Hidden."
             setPadding(0, 0, 0, dp(4))
         })
         root.addView(Button(this).apply {
-            text = "Notification Access"
+            text = "Notification Access (Hidden only)"
             setOnClickListener { openNotificationAccess() }
+        })
+        root.addView(Button(this).apply {
+            text = "Copy FCM token"
+            setOnClickListener { copyFcmToken() }
         })
         root.addView(Button(this).apply {
             text = "Start"
@@ -147,10 +160,10 @@ class MainActivity : Activity() {
                 Prefs.setReceiverEnabled(this@MainActivity, true)
                 applyReceiverRuntime()
                 toast(
-                    if (Prefs.receiverTransport(this@MainActivity) == Prefs.RECEIVER_HIDDEN) {
-                        "Hidden started"
-                    } else {
-                        "Started"
+                    when (Prefs.receiverTransport(this@MainActivity)) {
+                        Prefs.RECEIVER_PUSH -> "Push started"
+                        Prefs.RECEIVER_HIDDEN -> "Hidden started"
+                        else -> "Started"
                     }
                 )
                 updateInfo()
@@ -162,6 +175,7 @@ class MainActivity : Activity() {
                 Prefs.setReceiverEnabled(this@MainActivity, false)
                 stopService(Intent(this@MainActivity, ReceiverService::class.java))
                 stopService(Intent(this@MainActivity, HiddenReceiverService::class.java))
+                FcmTransport.sync(this@MainActivity)
                 MirrorNotificationListener.refresh(this@MainActivity)
                 toast("Stopped")
                 updateInfo()
@@ -171,17 +185,25 @@ class MainActivity : Activity() {
         root.addView(receiverInfo)
 
         updateInfo()
+        FcmTransport.refreshToken(this) { runOnUiThread { updateInfo() } }
     }
 
     override fun onResume() {
         super.onResume()
-        if (Prefs.mode(this) == Prefs.MODE_RECEIVER &&
-            Prefs.receiverTransport(this) == Prefs.RECEIVER_HIDDEN &&
-            Prefs.receiverEnabled(this) &&
-            hasNotificationAccess()
-        ) {
-            startHiddenReceiverService()
-            MirrorNotificationListener.refresh(this)
+        if (Prefs.mode(this) == Prefs.MODE_RECEIVER && Prefs.receiverEnabled(this)) {
+            when (Prefs.receiverTransport(this)) {
+                Prefs.RECEIVER_PUSH -> {
+                    FcmTransport.sync(this) { runOnUiThread { updateInfo() } }
+                    FcmTransport.refreshToken(this) { runOnUiThread { updateInfo() } }
+                }
+
+                Prefs.RECEIVER_HIDDEN -> {
+                    if (hasNotificationAccess()) {
+                        startHiddenReceiverService()
+                        MirrorNotificationListener.refresh(this)
+                    }
+                }
+            }
         }
         if (::senderInfo.isInitialized) updateInfo()
     }
@@ -197,7 +219,11 @@ class MainActivity : Activity() {
         pairInput.error = null
         val oldMode = Prefs.mode(this)
         val mode = if (receiverRadio.isChecked) Prefs.MODE_RECEIVER else Prefs.MODE_SENDER
-        val transport = if (hiddenRadio.isChecked) Prefs.RECEIVER_HIDDEN else Prefs.RECEIVER_STABLE
+        val transport = when {
+            pushRadio.isChecked -> Prefs.RECEIVER_PUSH
+            hiddenRadio.isChecked -> Prefs.RECEIVER_HIDDEN
+            else -> Prefs.RECEIVER_STABLE
+        }
 
         if (oldMode != mode && mode == Prefs.MODE_RECEIVER) {
             Prefs.setReceiverEnabled(this, false)
@@ -211,7 +237,10 @@ class MainActivity : Activity() {
             Prefs.setReceiverEnabled(this, false)
             stopService(Intent(this, ReceiverService::class.java))
             stopService(Intent(this, HiddenReceiverService::class.java))
+            FcmTransport.sync(this)
             MirrorNotificationListener.refresh(this)
+        } else if (transport != Prefs.RECEIVER_PUSH) {
+            FcmTransport.sync(this)
         }
 
         if (showToast) toast("Saved")
@@ -222,15 +251,33 @@ class MainActivity : Activity() {
     private fun applyReceiverRuntime() {
         if (Prefs.mode(this) != Prefs.MODE_RECEIVER || !Prefs.receiverEnabled(this)) return
 
-        if (Prefs.receiverTransport(this) == Prefs.RECEIVER_HIDDEN) {
-            stopService(Intent(this, ReceiverService::class.java))
-            startHiddenReceiverService()
-            MirrorNotificationListener.refresh(this)
-        } else {
-            stopService(Intent(this, HiddenReceiverService::class.java))
-            MirrorNotificationListener.refresh(this)
-            stopService(Intent(this, ReceiverService::class.java))
-            startForegroundService(Intent(this, ReceiverService::class.java))
+        when (Prefs.receiverTransport(this)) {
+            Prefs.RECEIVER_PUSH -> {
+                stopService(Intent(this, ReceiverService::class.java))
+                stopService(Intent(this, HiddenReceiverService::class.java))
+                MirrorNotificationListener.refresh(this)
+                FcmTransport.sync(this) { ok ->
+                    runOnUiThread {
+                        if (!ok) toast("FCM setup failed")
+                        updateInfo()
+                    }
+                }
+            }
+
+            Prefs.RECEIVER_HIDDEN -> {
+                FcmTransport.sync(this)
+                stopService(Intent(this, ReceiverService::class.java))
+                startHiddenReceiverService()
+                MirrorNotificationListener.refresh(this)
+            }
+
+            else -> {
+                FcmTransport.sync(this)
+                stopService(Intent(this, HiddenReceiverService::class.java))
+                MirrorNotificationListener.refresh(this)
+                stopService(Intent(this, ReceiverService::class.java))
+                startForegroundService(Intent(this, ReceiverService::class.java))
+            }
         }
     }
 
@@ -242,14 +289,38 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun copyFcmToken() {
+        FcmTransport.refreshToken(this) { token ->
+            runOnUiThread {
+                if (token.isBlank()) {
+                    toast("FCM token not ready")
+                    return@runOnUiThread
+                }
+                val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                clipboard.setPrimaryClip(ClipData.newPlainText("FCM token", token))
+                toast("FCM token copied")
+                updateInfo()
+            }
+        }
+    }
+
     private fun updateInfo() {
         val access = hasNotificationAccess()
         val apps = if (Prefs.forwardAllApps(this)) "All apps" else "${Prefs.selectedApps(this).size} apps"
         senderInfo.text = "Access: ${if (access) "ON" else "OFF"} • $apps"
 
-        val transport = if (Prefs.receiverTransport(this) == Prefs.RECEIVER_HIDDEN) "Hidden" else "Stable"
+        val transport = when (Prefs.receiverTransport(this)) {
+            Prefs.RECEIVER_PUSH -> "Push"
+            Prefs.RECEIVER_HIDDEN -> "Hidden"
+            else -> "Stable"
+        }
         val enabled = Prefs.mode(this) == Prefs.MODE_RECEIVER && Prefs.receiverEnabled(this)
-        receiverInfo.text = "$transport • ${if (enabled) "ON" else "OFF"}"
+        val pushStatus = if (Prefs.receiverTransport(this) == Prefs.RECEIVER_PUSH) {
+            val token = if (Prefs.fcmToken(this).isBlank()) "token pending" else "token ready"
+            val topic = if (Prefs.fcmSubscribedTopic(this).isBlank()) "topic pending" else "topic ready"
+            " • $token • $topic"
+        } else ""
+        receiverInfo.text = "$transport • ${if (enabled) "ON" else "OFF"}$pushStatus"
     }
 
     private fun hasNotificationAccess(): Boolean =
