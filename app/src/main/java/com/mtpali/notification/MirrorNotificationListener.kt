@@ -3,12 +3,25 @@ package com.mtpali.notification
 import android.app.Notification
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 class MirrorNotificationListener : NotificationListenerService() {
+    override fun onListenerConnected() {
+        super.onListenerConnected()
+        Prefs.setListenerStatus(this, "CONNECTED at ${timeNow()}")
+    }
+
+    override fun onListenerDisconnected() {
+        Prefs.setListenerStatus(this, "disconnected at ${timeNow()}")
+        super.onListenerDisconnected()
+    }
+
     override fun onNotificationPosted(sbn: StatusBarNotification?) {
         if (sbn == null) return
         if (Prefs.mode(this) != Prefs.MODE_SENDER) return
-        if (Prefs.pairCode(this).isBlank()) return
+        if (!CryptoBox.isValidPairCode(Prefs.pairCode(this))) return
         if (sbn.packageName == packageName) return
 
         val forwardAll = Prefs.forwardAllApps(this)
@@ -28,6 +41,8 @@ class MirrorNotificationListener : NotificationListenerService() {
             sbn.packageName
         }
 
+        Prefs.setLastCapture(this, "$appName: ${title.take(50)} at ${timeNow()}")
+
         val payload = MirrorPayload(
             packageName = sbn.packageName,
             appName = appName,
@@ -39,4 +54,7 @@ class MirrorNotificationListener : NotificationListenerService() {
 
         RelayClient.publish(applicationContext, payload)
     }
+
+    private fun timeNow(): String =
+        SimpleDateFormat("HH:mm:ss", Locale.US).format(Date())
 }
