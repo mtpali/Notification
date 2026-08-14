@@ -22,6 +22,7 @@ class ActionCommandReceiver : BroadcastReceiver() {
                     ?.toString()
                     ?.trim()
                     .orEmpty()
+                    .take(MAX_REPLY_LENGTH)
                 if (text.isBlank()) return
 
                 CommandPayload(
@@ -56,6 +57,8 @@ class ActionCommandReceiver : BroadcastReceiver() {
     }
 
     companion object {
+        private const val MAX_REPLY_LENGTH = 1000
+
         const val ACTION_REPLY = "com.mtpali.notification.REPLY"
         const val ACTION_MARK_READ = "com.mtpali.notification.MARK_READ"
         const val KEY_REPLY_TEXT = "reply_text"
