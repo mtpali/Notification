@@ -15,7 +15,7 @@ The recommended transport is Firebase Cloud Messaging because it remains availab
 Samsung Sender
   -> AES-GCM encrypt on device
   -> short HTTPS request
-  -> Firebase Cloud Function relay
+  -> Cloudflare Worker relay
   -> Firebase Cloud Messaging
   -> POCO Receiver
   -> decrypt on device
@@ -27,7 +27,7 @@ Reply and Mark as read use the same path in reverse:
 ```text
 POCO Receiver
   -> encrypted command
-  -> Firebase Cloud Function relay
+  -> Cloudflare Worker relay
   -> FCM command topic
   -> Samsung Sender
   -> NotificationListenerService
@@ -36,64 +36,44 @@ POCO Receiver
 
 ## Privacy and security
 
-- Notification contents are encrypted on-device with AES-GCM before leaving the Sender.
+- Notification contents are encrypted on-device with AES-GCM before leaving the phone.
 - The six-digit Pair Code is not sent to the relay.
 - FCM topics are derived from the Pair Code.
-- The Firebase Function sees only the derived topic, message kind, opaque ciphertext and a random message ID.
-- No Firebase service-account private key is stored in the APK or repository.
-- The Function uses Google-managed runtime credentials to call FCM.
-- `RELAY_TOKEN` is a private Firebase Functions secret and must never be committed.
-- The same Relay key is stored locally on both phones.
+- The Worker sees only the derived topic, message kind, opaque ciphertext and a random message ID.
+- The Firebase service-account private key is never stored in the APK or repository.
+- `GOOGLE_SERVICE_ACCOUNT_JSON` is stored only as a Cloudflare Worker Secret.
+- `RELAY_TOKEN` is stored as a Cloudflare Worker Secret and locally on the two phones.
 
-## Why Firebase Functions instead of Cloudflare
+## Cloudflare relay
 
-The project uses Firebase for both the Android push transport and the small server-side relay. No Cloudflare Worker or Cloudflare account is required.
-
-Cloud Functions must run on the Firebase Blaze plan. For this personal workload the actual usage is expected to be very small, but billing must be enabled before deployment.
-
-## Firebase relay deployment
-
-Firebase project:
+Worker URL:
 
 ```text
-notification-2515e
+https://notification.mhdvi45.workers.dev
 ```
 
-Install the Firebase CLI and authenticate:
-
-```bash
-npm install -g firebase-tools
-firebase login
-firebase use notification-2515e
-```
-
-Create the private Relay key as a Firebase secret:
-
-```bash
-firebase functions:secrets:set RELAY_TOKEN
-```
-
-Use a random value of at least 24 characters and keep it private.
-
-Deploy only the relay:
-
-```bash
-firebase deploy --only functions:relay
-```
-
-Configured base URL:
+Health endpoint:
 
 ```text
-https://europe-west1-notification-2515e.cloudfunctions.net/relay
+https://notification.mhdvi45.workers.dev/health
 ```
 
-The Android app already uses this as its default Relay URL and appends `/v1/send` itself.
-
-Health endpoint after deployment:
+The Worker source is in:
 
 ```text
-https://europe-west1-notification-2515e.cloudfunctions.net/relay/health
+relay/src/index.js
 ```
+
+Required Cloudflare Secrets:
+
+```text
+GOOGLE_SERVICE_ACCOUNT_JSON
+RELAY_TOKEN
+```
+
+`GOOGLE_SERVICE_ACCOUNT_JSON` must contain the complete Firebase service-account JSON. `RELAY_TOKEN` must be a strong private random value of at least 24 characters. Never commit either secret.
+
+The Android app uses the Worker URL as its default Relay URL and appends `/v1/send` itself.
 
 ## Device setup
 
@@ -102,7 +82,7 @@ https://europe-west1-notification-2515e.cloudfunctions.net/relay/health
 1. Install the current APK.
 2. Select **Sender**.
 3. Enter/generate the Pair Code.
-4. Enter the same private Relay key used for the Firebase `RELAY_TOKEN` secret.
+4. Enter the same private Relay key used for the Cloudflare `RELAY_TOKEN` secret.
 5. Save.
 6. Enable Notification Access.
 7. Choose All apps or selected apps.
@@ -131,7 +111,7 @@ Android Force Stop is intentionally different: after Force Stop, Android suppres
 
 ## Required end-to-end validation before merge
 
-After the Firebase Function is deployed:
+After the Cloudflare Worker is configured:
 
 1. Samsung **Send Test** -> POCO receives it.
 2. Swipe POCO from Recents -> Send Test still arrives.
@@ -153,16 +133,6 @@ gradle --no-daemon :app:assembleDebug
 
 R8 and resource shrinking are enabled for debug and release builds.
 
-## Build/check Firebase Function
-
-```bash
-cd functions
-npm install
-npm run check
-```
-
-The Function uses Node.js 22, `firebase-functions` and `firebase-admin`.
-
 ## Branch policy
 
 Development for the FCM architecture is on:
@@ -171,4 +141,4 @@ Development for the FCM architecture is on:
 agent/fcm-v0.8
 ```
 
-PR #2 must remain Draft and must not be merged into `main` until Firebase relay deployment, full device testing, and final cleanup are complete.
+PR #2 must remain Draft and must not be merged into `main` until Cloudflare relay testing, full device testing, and final cleanup are complete.
