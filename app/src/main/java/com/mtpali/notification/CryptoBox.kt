@@ -45,11 +45,11 @@ data class MirrorPayload(
 object CryptoBox {
     private val random = SecureRandom()
 
-    fun generatePairCode(): String {
-        val bytes = ByteArray(24)
-        random.nextBytes(bytes)
-        return encode(bytes)
-    }
+    fun generatePairCode(): String =
+        (100000 + random.nextInt(900000)).toString()
+
+    fun isValidPairCode(pairCode: String): Boolean =
+        pairCode.length == 6 && pairCode.all { it.isDigit() }
 
     fun topic(pairCode: String): String {
         val digest = sha256("notification-topic-v1:$pairCode")
