@@ -70,13 +70,13 @@ class MainActivity : Activity() {
             }
         })
 
-        root.addView(sectionTitle("Secure Relay"))
+        root.addView(sectionTitle("Firebase Relay"))
         root.addView(TextView(this).apply {
-            text = "Use the same Relay URL and Relay key on both phones. The key is stored only on the devices."
+            text = "Firebase Function URL is preconfigured. Use the same private Relay key on both phones."
             setPadding(0, 0, 0, dp(4))
         })
         relayUrlInput = EditText(this).apply {
-            hint = "https://your-worker.workers.dev"
+            hint = Prefs.DEFAULT_RELAY_URL
             setSingleLine(true)
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
             setText(Prefs.relayUrl(this@MainActivity))
@@ -114,7 +114,7 @@ class MainActivity : Activity() {
                     return@setOnClickListener
                 }
                 if (!Prefs.relayConfigured(this@MainActivity)) {
-                    toast("Configure Secure Relay")
+                    toast("Configure Firebase Relay")
                     return@setOnClickListener
                 }
 
