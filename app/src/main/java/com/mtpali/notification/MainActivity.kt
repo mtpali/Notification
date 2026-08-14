@@ -17,8 +17,11 @@ import android.widget.Toast
 class MainActivity : Activity() {
     private lateinit var senderRadio: RadioButton
     private lateinit var receiverRadio: RadioButton
+    private lateinit var stableRadio: RadioButton
+    private lateinit var hiddenRadio: RadioButton
     private lateinit var pairInput: EditText
     private lateinit var senderInfo: TextView
+    private lateinit var receiverInfo: TextView
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -68,7 +71,7 @@ class MainActivity : Activity() {
         root.addView(sectionTitle("Sender"))
         root.addView(Button(this).apply {
             text = "Notification Access"
-            setOnClickListener { startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) }
+            setOnClickListener { openNotificationAccess() }
         })
         root.addView(Button(this).apply {
             text = "Apps"
@@ -103,6 +106,24 @@ class MainActivity : Activity() {
         root.addView(senderInfo)
 
         root.addView(sectionTitle("Receiver"))
+        val receiverTypeGroup = RadioGroup(this).apply { orientation = RadioGroup.VERTICAL }
+        stableRadio = RadioButton(this).apply { text = "Stable • persistent status" }
+        hiddenRadio = RadioButton(this).apply { text = "Hidden • no persistent status" }
+        receiverTypeGroup.addView(stableRadio)
+        receiverTypeGroup.addView(hiddenRadio)
+        root.addView(receiverTypeGroup)
+
+        if (Prefs.receiverTransport(this) == Prefs.RECEIVER_HIDDEN) hiddenRadio.isChecked = true
+        else stableRadio.isChecked = true
+
+        root.addView(TextView(this).apply {
+            text = "Hidden requires Notification Access on the Receiver."
+            setPadding(0, 0, 0, dp(4))
+        })
+        root.addView(Button(this).apply {
+            text = "Notification Access"
+            setOnClickListener { openNotificationAccess() }
+        })
         root.addView(Button(this).apply {
             text = "Start"
             setOnClickListener {
@@ -111,23 +132,45 @@ class MainActivity : Activity() {
                     toast("Select Receiver")
                     return@setOnClickListener
                 }
-                startForegroundService(Intent(this@MainActivity, ReceiverService::class.java))
-                toast("Started")
+
+                Prefs.setReceiverEnabled(this@MainActivity, true)
+                applyReceiverRuntime()
+
+                if (Prefs.receiverTransport(this@MainActivity) == Prefs.RECEIVER_HIDDEN &&
+                    !hasNotificationAccess()
+                ) {
+                    toast("Enable Notification Access for Hidden")
+                    openNotificationAccess()
+                } else {
+                    toast(if (Prefs.receiverTransport(this@MainActivity) == Prefs.RECEIVER_HIDDEN) "Hidden started" else "Started")
+                }
+                updateInfo()
             }
         })
         root.addView(Button(this).apply {
             text = "Stop"
             setOnClickListener {
+                Prefs.setReceiverEnabled(this@MainActivity, false)
                 stopService(Intent(this@MainActivity, ReceiverService::class.java))
+                MirrorNotificationListener.refresh(this@MainActivity)
                 toast("Stopped")
+                updateInfo()
             }
         })
+        receiverInfo = TextView(this).apply { setPadding(0, dp(4), 0, 0) }
+        root.addView(receiverInfo)
 
         updateInfo()
     }
 
     override fun onResume() {
         super.onResume()
+        if (Prefs.mode(this) == Prefs.MODE_RECEIVER &&
+            Prefs.receiverTransport(this) == Prefs.RECEIVER_HIDDEN &&
+            Prefs.receiverEnabled(this)
+        ) {
+            MirrorNotificationListener.refresh(this)
+        }
         if (::senderInfo.isInitialized) updateInfo()
     }
 
@@ -142,21 +185,58 @@ class MainActivity : Activity() {
         pairInput.error = null
         val oldMode = Prefs.mode(this)
         val mode = if (receiverRadio.isChecked) Prefs.MODE_RECEIVER else Prefs.MODE_SENDER
+        val transport = if (hiddenRadio.isChecked) Prefs.RECEIVER_HIDDEN else Prefs.RECEIVER_STABLE
+
+        if (oldMode != mode && mode == Prefs.MODE_RECEIVER) {
+            Prefs.setReceiverEnabled(this, false)
+        }
+
         Prefs.setMode(this, mode)
         Prefs.setPairCode(this, code)
-        if (oldMode == Prefs.MODE_RECEIVER && mode == Prefs.MODE_SENDER) {
+        Prefs.setReceiverTransport(this, transport)
+
+        if (mode == Prefs.MODE_SENDER) {
+            Prefs.setReceiverEnabled(this, false)
             stopService(Intent(this, ReceiverService::class.java))
+            MirrorNotificationListener.refresh(this)
+        } else if (Prefs.receiverEnabled(this)) {
+            applyReceiverRuntime()
         }
+
         if (showToast) toast("Saved")
         updateInfo()
         return true
     }
 
+    private fun applyReceiverRuntime() {
+        if (Prefs.mode(this) != Prefs.MODE_RECEIVER || !Prefs.receiverEnabled(this)) return
+
+        if (Prefs.receiverTransport(this) == Prefs.RECEIVER_HIDDEN) {
+            stopService(Intent(this, ReceiverService::class.java))
+            MirrorNotificationListener.refresh(this)
+        } else {
+            MirrorNotificationListener.refresh(this)
+            stopService(Intent(this, ReceiverService::class.java))
+            startForegroundService(Intent(this, ReceiverService::class.java))
+        }
+    }
+
     private fun updateInfo() {
-        val access = Settings.Secure.getString(contentResolver, "enabled_notification_listeners")
-            ?.contains(packageName) == true
+        val access = hasNotificationAccess()
         val apps = if (Prefs.forwardAllApps(this)) "All apps" else "${Prefs.selectedApps(this).size} apps"
         senderInfo.text = "Access: ${if (access) "ON" else "OFF"} • $apps"
+
+        val transport = if (Prefs.receiverTransport(this) == Prefs.RECEIVER_HIDDEN) "Hidden" else "Stable"
+        val enabled = Prefs.mode(this) == Prefs.MODE_RECEIVER && Prefs.receiverEnabled(this)
+        receiverInfo.text = "$transport • ${if (enabled) "ON" else "OFF"}"
+    }
+
+    private fun hasNotificationAccess(): Boolean =
+        Settings.Secure.getString(contentResolver, "enabled_notification_listeners")
+            ?.contains(packageName) == true
+
+    private fun openNotificationAccess() {
+        startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
     }
 
     private fun sectionTitle(value: String) = TextView(this).apply {
