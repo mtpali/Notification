@@ -3,5 +3,11 @@
 local.properties
 build/
 app/build/
+functions/node_modules/
+functions/*.log
+functions/.env*
+functions/.secret.local
+firebase-debug.log
+firebase-debug.*.log
 *.iml
 .DS_Store
