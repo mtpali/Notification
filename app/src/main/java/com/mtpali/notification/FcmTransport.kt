@@ -64,11 +64,17 @@ object FcmTransport {
     }
 
     private fun desiredTopic(context: Context): String {
-        if (Prefs.mode(context) != Prefs.MODE_RECEIVER) return ""
-        if (Prefs.receiverTransport(context) != Prefs.RECEIVER_PUSH) return ""
-        if (!Prefs.receiverEnabled(context)) return ""
         val pairCode = Prefs.pairCode(context)
         if (!CryptoBox.isValidPairCode(pairCode)) return ""
-        return CryptoBox.topic(pairCode)
+
+        return when (Prefs.mode(context)) {
+            Prefs.MODE_SENDER -> CryptoBox.commandTopic(pairCode)
+            Prefs.MODE_RECEIVER -> {
+                if (Prefs.receiverTransport(context) == Prefs.RECEIVER_PUSH &&
+                    Prefs.receiverEnabled(context)
+                ) CryptoBox.topic(pairCode) else ""
+            }
+            else -> ""
+        }
     }
 }
