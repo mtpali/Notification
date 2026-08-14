@@ -94,7 +94,7 @@ class ReceiverService : Service() {
         val encodedSince = URLEncoder.encode(since, "UTF-8")
         val request = Request.Builder()
             .url("wss://ntfy.sh/$topic/ws?since=$encodedSince")
-            .header("User-Agent", "Notification-Android/0.3")
+            .header("User-Agent", "Notification-Android/0.4")
             .build()
 
         Prefs.setReceiverStatus(this, "connecting WebSocket at ${timeNow()}")
@@ -178,15 +178,27 @@ class ReceiverService : Service() {
     }
 
     private fun showMirroredNotification(payload: MirrorPayload, relayId: String) {
-        val title = payload.title.ifBlank { payload.appName.ifBlank { "Notification" } }
-        val body = payload.text.ifBlank { payload.appName }
+        val sourceApp = payload.appName.ifBlank {
+            payload.packageName.substringAfterLast('.').ifBlank { "Notification" }
+        }
+        val originalTitle = payload.title.trim()
+        val displayTitle = when {
+            originalTitle.isBlank() -> sourceApp
+            originalTitle.equals(sourceApp, ignoreCase = true) -> sourceApp
+            else -> "$sourceApp • $originalTitle"
+        }
+        val body = payload.text.ifBlank { sourceApp }
 
         val notification = Notification.Builder(this, CHANNEL_MIRRORED)
             .setSmallIcon(R.drawable.ic_notification)
-            .setContentTitle(title)
+            .setContentTitle(displayTitle)
             .setContentText(body)
-            .setSubText(payload.appName)
-            .setStyle(Notification.BigTextStyle().bigText(body))
+            .setSubText(sourceApp)
+            .setStyle(
+                Notification.BigTextStyle()
+                    .setBigContentTitle(displayTitle)
+                    .bigText(body)
+            )
             .setAutoCancel(true)
             .setWhen(payload.postTime.takeIf { it > 0 } ?: System.currentTimeMillis())
             .build()
