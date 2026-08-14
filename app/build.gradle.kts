@@ -1,6 +1,7 @@
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
+    id("com.google.gms.google-services")
 }
 
 android {
@@ -11,8 +12,8 @@ android {
         applicationId = "com.mtpali.notification"
         minSdk = 28
         targetSdk = 29
-        versionCode = 10
-        versionName = "0.7.3"
+        versionCode = 11
+        versionName = "0.8.0-alpha1"
     }
 
     buildTypes {
@@ -57,4 +58,6 @@ android {
 
 dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.11.0")
+    implementation(platform("com.google.firebase:firebase-bom:34.16.0"))
+    implementation("com.google.firebase:firebase-messaging")
 }
