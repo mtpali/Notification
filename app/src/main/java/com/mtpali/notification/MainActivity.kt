@@ -137,6 +137,7 @@ class MainActivity : Activity() {
                     !hasNotificationAccess()
                 ) {
                     Prefs.setReceiverEnabled(this@MainActivity, false)
+                    stopService(Intent(this@MainActivity, HiddenReceiverService::class.java))
                     toast("Enable Notification Access for Hidden")
                     openNotificationAccess()
                     updateInfo()
@@ -160,6 +161,7 @@ class MainActivity : Activity() {
             setOnClickListener {
                 Prefs.setReceiverEnabled(this@MainActivity, false)
                 stopService(Intent(this@MainActivity, ReceiverService::class.java))
+                stopService(Intent(this@MainActivity, HiddenReceiverService::class.java))
                 MirrorNotificationListener.refresh(this@MainActivity)
                 toast("Stopped")
                 updateInfo()
@@ -178,6 +180,7 @@ class MainActivity : Activity() {
             Prefs.receiverEnabled(this) &&
             hasNotificationAccess()
         ) {
+            startHiddenReceiverService()
             MirrorNotificationListener.refresh(this)
         }
         if (::senderInfo.isInitialized) updateInfo()
@@ -207,6 +210,7 @@ class MainActivity : Activity() {
         if (mode == Prefs.MODE_SENDER) {
             Prefs.setReceiverEnabled(this, false)
             stopService(Intent(this, ReceiverService::class.java))
+            stopService(Intent(this, HiddenReceiverService::class.java))
             MirrorNotificationListener.refresh(this)
         }
 
@@ -220,11 +224,21 @@ class MainActivity : Activity() {
 
         if (Prefs.receiverTransport(this) == Prefs.RECEIVER_HIDDEN) {
             stopService(Intent(this, ReceiverService::class.java))
+            startHiddenReceiverService()
             MirrorNotificationListener.refresh(this)
         } else {
+            stopService(Intent(this, HiddenReceiverService::class.java))
             MirrorNotificationListener.refresh(this)
             stopService(Intent(this, ReceiverService::class.java))
             startForegroundService(Intent(this, ReceiverService::class.java))
+        }
+    }
+
+    private fun startHiddenReceiverService() {
+        try {
+            startService(Intent(this, HiddenReceiverService::class.java))
+        } catch (_: IllegalStateException) {
+            MirrorNotificationListener.refresh(this)
         }
     }
 
