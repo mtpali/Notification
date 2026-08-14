@@ -63,25 +63,29 @@ object RelayClient {
             var connection: HttpURLConnection? = null
             val ok = try {
                 val encrypted = CryptoBox.encrypt(pairCode, plaintext)
-                val body = JSONObject().apply {
-                    put("topic", topic)
-                    put("kind", kind)
-                    put("payload", encrypted)
-                    put("id", UUID.randomUUID().toString())
-                }.toString()
+                if (encrypted.length > MAX_ENCRYPTED_PAYLOAD) {
+                    false
+                } else {
+                    val body = JSONObject().apply {
+                        put("topic", topic)
+                        put("kind", kind)
+                        put("payload", encrypted)
+                        put("id", UUID.randomUUID().toString())
+                    }.toString()
 
-                connection = URL("$relayUrl/v1/send").openConnection() as HttpURLConnection
-                connection.requestMethod = "POST"
-                connection.connectTimeout = 10_000
-                connection.readTimeout = 15_000
-                connection.doOutput = true
-                connection.setRequestProperty("Authorization", "Bearer $relayToken")
-                connection.setRequestProperty("Content-Type", "application/json; charset=utf-8")
-                connection.setRequestProperty("User-Agent", "Notification-Android/0.8")
-                connection.outputStream.use {
-                    it.write(body.toByteArray(StandardCharsets.UTF_8))
+                    connection = URL("$relayUrl/v1/send").openConnection() as HttpURLConnection
+                    connection.requestMethod = "POST"
+                    connection.connectTimeout = 5_000
+                    connection.readTimeout = 5_000
+                    connection.doOutput = true
+                    connection.setRequestProperty("Authorization", "Bearer $relayToken")
+                    connection.setRequestProperty("Content-Type", "application/json; charset=utf-8")
+                    connection.setRequestProperty("User-Agent", "Notification-Android/0.8")
+                    connection.outputStream.use {
+                        it.write(body.toByteArray(StandardCharsets.UTF_8))
+                    }
+                    connection.responseCode in 200..299
                 }
-                connection.responseCode in 200..299
             } catch (_: Exception) {
                 false
             } finally {
@@ -91,6 +95,7 @@ object RelayClient {
         }
     }
 
+    private const val MAX_ENCRYPTED_PAYLOAD = 3500
     private const val KIND_MIRROR = "mirror"
     private const val KIND_COMMAND = "command"
 }
