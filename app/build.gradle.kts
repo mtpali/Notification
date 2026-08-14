@@ -11,8 +11,8 @@ android {
         applicationId = "com.mtpali.notification"
         minSdk = 28
         targetSdk = 29
-        versionCode = 2
-        versionName = "0.2.0"
+        versionCode = 3
+        versionName = "0.3.0"
     }
 
     buildTypes {
@@ -33,4 +33,8 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
+}
+
+dependencies {
+    implementation("com.squareup.okhttp3:okhttp:4.11.0")
 }
