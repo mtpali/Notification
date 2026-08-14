@@ -1,8 +1,5 @@
 package com.mtpali.notification
 
-import android.app.Notification
-import android.app.NotificationChannel
-import android.app.NotificationManager
 import android.app.Service
 import android.content.Context
 import android.content.Intent
@@ -23,7 +20,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
-class ReceiverService : Service() {
+class HiddenReceiverService : Service() {
     private lateinit var client: OkHttpClient
     private lateinit var connectivityManager: ConnectivityManager
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -44,7 +41,6 @@ class ReceiverService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        createServiceChannel()
         MirrorNotifier.ensureChannel(this)
         connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
         client = OkHttpClient.Builder()
@@ -54,13 +50,7 @@ class ReceiverService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        startForeground(SERVICE_NOTIFICATION_ID, serviceNotification("Connecting…"))
-
-        if (Prefs.mode(this) != Prefs.MODE_RECEIVER ||
-            Prefs.receiverTransport(this) != Prefs.RECEIVER_STABLE ||
-            !Prefs.receiverEnabled(this) ||
-            !CryptoBox.isValidPairCode(Prefs.pairCode(this))
-        ) {
+        if (!shouldRun()) {
             stopReceiver()
             return START_NOT_STICKY
         }
@@ -68,7 +58,11 @@ class ReceiverService : Service() {
         if (!running) {
             running = true
             startNetworkMonitoring()
+        } else {
+            applyNetworkState()
         }
+
+        MirrorNotificationListener.refresh(this)
         return START_STICKY
     }
 
@@ -86,6 +80,12 @@ class ReceiverService : Service() {
         }
         super.onDestroy()
     }
+
+    private fun shouldRun(): Boolean =
+        Prefs.mode(this) == Prefs.MODE_RECEIVER &&
+            Prefs.receiverTransport(this) == Prefs.RECEIVER_HIDDEN &&
+            Prefs.receiverEnabled(this) &&
+            CryptoBox.isValidPairCode(Prefs.pairCode(this))
 
     private fun startNetworkMonitoring() {
         if (!networkCallbackRegistered) {
@@ -112,17 +112,17 @@ class ReceiverService : Service() {
     }
 
     private fun applyNetworkState() {
-        if (!running) return
+        if (!running || !shouldRun()) {
+            if (running) stopReceiver()
+            return
+        }
+
         networkAvailable = isInternetAvailable()
         if (networkAvailable) {
-            if (webSocket == null) {
-                updateServiceNotification("Connecting…")
-                connectWebSocket()
-            }
+            if (webSocket == null) connectWebSocket()
         } else {
             webSocket?.cancel()
             webSocket = null
-            updateServiceNotification("Offline")
         }
     }
 
@@ -138,72 +138,66 @@ class ReceiverService : Service() {
     }
 
     private fun connectWebSocket() {
-        if (!running || !networkAvailable || webSocket != null) return
+        if (!running || !networkAvailable || webSocket != null || !shouldRun()) return
 
         val pairCode = Prefs.pairCode(this)
-        if (!CryptoBox.isValidPairCode(pairCode) ||
-            Prefs.mode(this) != Prefs.MODE_RECEIVER ||
-            Prefs.receiverTransport(this) != Prefs.RECEIVER_STABLE ||
-            !Prefs.receiverEnabled(this)
-        ) {
-            stopReceiver()
-            return
-        }
-
         val lastId = Prefs.lastMessageId(this)
         val since = if (lastId.isBlank()) "10m" else lastId
-        val request = Request.Builder()
-            .url(
-                "wss://ntfy.sh/${CryptoBox.topic(pairCode)}/ws?since=" +
-                    URLEncoder.encode(since, "UTF-8")
-            )
-            .header("User-Agent", "Notification-Android/0.7")
-            .build()
 
-        webSocket = client.newWebSocket(request, object : WebSocketListener() {
-            override fun onOpen(webSocket: WebSocket, response: Response) {
-                updateServiceNotification("Connected")
-            }
+        try {
+            val request = Request.Builder()
+                .url(
+                    "wss://ntfy.sh/${CryptoBox.topic(pairCode)}/ws?since=" +
+                        URLEncoder.encode(since, "UTF-8")
+                )
+                .header("User-Agent", "Notification-Android/0.7.3")
+                .build()
 
-            override fun onMessage(webSocket: WebSocket, text: String) {
-                handleRelayLine(pairCode, text)
-            }
-
-            override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
-                webSocket.close(code, reason)
-            }
-
-            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                if (this@ReceiverService.webSocket === webSocket) this@ReceiverService.webSocket = null
-                networkAvailable = isInternetAvailable()
-                if (running && networkAvailable) {
-                    updateServiceNotification("Reconnecting…")
-                    scheduleReconnect()
-                } else if (running) {
-                    updateServiceNotification("Offline")
+            webSocket = client.newWebSocket(request, object : WebSocketListener() {
+                override fun onMessage(webSocket: WebSocket, text: String) {
+                    handleRelayLine(pairCode, text)
                 }
-            }
 
-            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                if (this@ReceiverService.webSocket === webSocket) this@ReceiverService.webSocket = null
-                networkAvailable = isInternetAvailable()
-                if (running && networkAvailable) {
-                    updateServiceNotification("Reconnecting…")
-                    scheduleReconnect()
-                } else if (running) {
-                    updateServiceNotification("Offline")
+                override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                    webSocket.close(code, reason)
                 }
-            }
-        })
+
+                override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                    if (this@HiddenReceiverService.webSocket === webSocket) {
+                        this@HiddenReceiverService.webSocket = null
+                    }
+                    networkAvailable = isInternetAvailable()
+                    if (running && shouldRun() && networkAvailable) scheduleReconnect()
+                }
+
+                override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                    if (this@HiddenReceiverService.webSocket === webSocket) {
+                        this@HiddenReceiverService.webSocket = null
+                    }
+                    networkAvailable = isInternetAvailable()
+                    if (running && shouldRun() && networkAvailable) scheduleReconnect()
+                }
+            })
+        } catch (_: Exception) {
+            webSocket = null
+            if (running && shouldRun() && networkAvailable) scheduleReconnect()
+        }
     }
 
     private fun scheduleReconnect() {
-        if (!running || !networkAvailable || !reconnectScheduled.compareAndSet(false, true)) return
-        reconnectExecutor.schedule({
+        if (!running || !shouldRun() || !networkAvailable || reconnectExecutor.isShutdown ||
+            !reconnectScheduled.compareAndSet(false, true)
+        ) return
+
+        try {
+            reconnectExecutor.schedule({
+                reconnectScheduled.set(false)
+                networkAvailable = isInternetAvailable()
+                if (running && shouldRun() && networkAvailable) connectWebSocket()
+            }, 2, TimeUnit.SECONDS)
+        } catch (_: RuntimeException) {
             reconnectScheduled.set(false)
-            networkAvailable = isInternetAvailable()
-            if (running && networkAvailable) connectWebSocket()
-        }, 2, TimeUnit.SECONDS)
+        }
     }
 
     private fun handleRelayLine(pairCode: String, line: String) {
@@ -225,39 +219,11 @@ class ReceiverService : Service() {
         }
     }
 
-    private fun createServiceChannel() {
-        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        manager.createNotificationChannel(
-            NotificationChannel(CHANNEL_SERVICE, "Receiver", NotificationManager.IMPORTANCE_MIN).apply {
-                setShowBadge(false)
-            }
-        )
-    }
-
-    private fun serviceNotification(status: String): Notification =
-        Notification.Builder(this, CHANNEL_SERVICE)
-            .setSmallIcon(R.drawable.ic_notification)
-            .setContentTitle("Notification")
-            .setContentText(status)
-            .setOngoing(true)
-            .build()
-
-    private fun updateServiceNotification(status: String) {
-        (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
-            .notify(SERVICE_NOTIFICATION_ID, serviceNotification(status))
-    }
-
     private fun stopReceiver() {
         running = false
         stopNetworkMonitoring()
         webSocket?.close(1000, "stop")
         webSocket = null
-        stopForeground(true)
         stopSelf()
-    }
-
-    companion object {
-        private const val SERVICE_NOTIFICATION_ID = 1001
-        private const val CHANNEL_SERVICE = "receiver_service"
     }
 }

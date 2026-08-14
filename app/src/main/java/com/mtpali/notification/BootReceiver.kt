@@ -8,8 +8,17 @@ class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent?) {
         if (intent?.action != Intent.ACTION_BOOT_COMPLETED) return
         if (Prefs.mode(context) != Prefs.MODE_RECEIVER) return
-        if (Prefs.pairCode(context).isBlank()) return
+        if (!Prefs.receiverEnabled(context)) return
+        if (!CryptoBox.isValidPairCode(Prefs.pairCode(context))) return
 
-        context.startForegroundService(Intent(context, ReceiverService::class.java))
+        if (Prefs.receiverTransport(context) == Prefs.RECEIVER_HIDDEN) {
+            try {
+                context.startService(Intent(context, HiddenReceiverService::class.java))
+            } catch (_: IllegalStateException) {
+            }
+            MirrorNotificationListener.refresh(context)
+        } else {
+            context.startForegroundService(Intent(context, ReceiverService::class.java))
+        }
     }
 }
