@@ -25,6 +25,9 @@ object Prefs {
     const val RECEIVER_HIDDEN = "hidden"
     const val RECEIVER_PUSH = "push"
 
+    const val DEFAULT_RELAY_URL =
+        "https://europe-west1-notification-2515e.cloudfunctions.net/relay"
+
     private fun prefs(context: Context) =
         context.getSharedPreferences(FILE, Context.MODE_PRIVATE)
 
@@ -72,10 +75,11 @@ object Prefs {
     }
 
     fun relayUrl(context: Context): String =
-        prefs(context).getString(KEY_RELAY_URL, "") ?: ""
+        prefs(context).getString(KEY_RELAY_URL, DEFAULT_RELAY_URL) ?: DEFAULT_RELAY_URL
 
     fun setRelayUrl(context: Context, value: String) {
-        prefs(context).edit().putString(KEY_RELAY_URL, value.trim()).apply()
+        val normalized = value.trim().ifBlank { DEFAULT_RELAY_URL }
+        prefs(context).edit().putString(KEY_RELAY_URL, normalized).apply()
     }
 
     fun relayToken(context: Context): String =
