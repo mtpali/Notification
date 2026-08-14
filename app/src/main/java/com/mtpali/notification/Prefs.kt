@@ -10,10 +10,13 @@ object Prefs {
     private const val KEY_SELECTED_APPS = "selected_apps"
     private const val KEY_LAST_MESSAGE_ID = "last_message_id"
     private const val KEY_LAST_COMMAND_ID = "last_command_id"
+    private const val KEY_PENDING_COMMAND = "pending_command"
     private const val KEY_RECEIVER_TRANSPORT = "receiver_transport"
     private const val KEY_RECEIVER_ENABLED = "receiver_enabled"
     private const val KEY_FCM_TOKEN = "fcm_token"
     private const val KEY_FCM_SUBSCRIBED_TOPIC = "fcm_subscribed_topic"
+    private const val KEY_RELAY_URL = "relay_url"
+    private const val KEY_RELAY_TOKEN = "relay_token"
 
     const val MODE_SENDER = "sender"
     const val MODE_RECEIVER = "receiver"
@@ -43,6 +46,7 @@ object Prefs {
             if (old != normalized) {
                 remove(KEY_LAST_MESSAGE_ID)
                 remove(KEY_LAST_COMMAND_ID)
+                remove(KEY_PENDING_COMMAND)
             }
         }.apply()
     }
@@ -66,6 +70,23 @@ object Prefs {
     fun setReceiverEnabled(context: Context, value: Boolean) {
         prefs(context).edit().putBoolean(KEY_RECEIVER_ENABLED, value).apply()
     }
+
+    fun relayUrl(context: Context): String =
+        prefs(context).getString(KEY_RELAY_URL, "") ?: ""
+
+    fun setRelayUrl(context: Context, value: String) {
+        prefs(context).edit().putString(KEY_RELAY_URL, value.trim()).apply()
+    }
+
+    fun relayToken(context: Context): String =
+        prefs(context).getString(KEY_RELAY_TOKEN, "") ?: ""
+
+    fun setRelayToken(context: Context, value: String) {
+        prefs(context).edit().putString(KEY_RELAY_TOKEN, value.trim()).apply()
+    }
+
+    fun relayConfigured(context: Context): Boolean =
+        relayUrl(context).startsWith("https://") && relayToken(context).length >= 24
 
     fun fcmToken(context: Context): String =
         prefs(context).getString(KEY_FCM_TOKEN, "") ?: ""
@@ -107,5 +128,16 @@ object Prefs {
 
     fun setLastCommandId(context: Context, id: String) {
         prefs(context).edit().putString(KEY_LAST_COMMAND_ID, id).apply()
+    }
+
+    fun pendingCommand(context: Context): String =
+        prefs(context).getString(KEY_PENDING_COMMAND, "") ?: ""
+
+    fun setPendingCommand(context: Context, value: String) {
+        prefs(context).edit().putString(KEY_PENDING_COMMAND, value).apply()
+    }
+
+    fun clearPendingCommand(context: Context) {
+        prefs(context).edit().remove(KEY_PENDING_COMMAND).apply()
     }
 }
