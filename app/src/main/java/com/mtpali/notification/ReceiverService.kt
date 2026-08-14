@@ -14,9 +14,6 @@ import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import org.json.JSONObject
 import java.net.URLEncoder
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -26,11 +23,8 @@ class ReceiverService : Service() {
     private val reconnectExecutor = Executors.newSingleThreadScheduledExecutor()
     private val reconnectScheduled = AtomicBoolean(false)
 
-    @Volatile
-    private var running = false
-
-    @Volatile
-    private var webSocket: WebSocket? = null
+    @Volatile private var running = false
+    @Volatile private var webSocket: WebSocket? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -42,11 +36,6 @@ class ReceiverService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_STOP) {
-            stopReceiver()
-            return START_NOT_STICKY
-        }
-
         startForeground(SERVICE_NOTIFICATION_ID, serviceNotification("Connecting…"))
 
         if (Prefs.mode(this) != Prefs.MODE_RECEIVER ||
@@ -58,10 +47,8 @@ class ReceiverService : Service() {
 
         if (!running) {
             running = true
-            Prefs.setReceiverStatus(this, "connecting at ${timeNow()}")
             connectWebSocket()
         }
-
         return START_STICKY
     }
 
@@ -91,18 +78,14 @@ class ReceiverService : Service() {
         val topic = CryptoBox.topic(pairCode)
         val lastId = Prefs.lastMessageId(this)
         val since = if (lastId.isBlank()) "10m" else lastId
-        val encodedSince = URLEncoder.encode(since, "UTF-8")
         val request = Request.Builder()
-            .url("wss://ntfy.sh/$topic/ws?since=$encodedSince")
-            .header("User-Agent", "Notification-Android/0.4")
+            .url("wss://ntfy.sh/$topic/ws?since=${URLEncoder.encode(since, "UTF-8")}")
+            .header("User-Agent", "Notification-Android/0.5")
             .build()
-
-        Prefs.setReceiverStatus(this, "connecting WebSocket at ${timeNow()}")
 
         webSocket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
-                Prefs.setReceiverStatus(this@ReceiverService, "CONNECTED WebSocket at ${timeNow()}")
-                updateServiceNotification("Connected • WebSocket")
+                updateServiceNotification("Connected")
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
@@ -114,30 +97,17 @@ class ReceiverService : Service() {
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                if (this@ReceiverService.webSocket === webSocket) {
-                    this@ReceiverService.webSocket = null
-                }
+                if (this@ReceiverService.webSocket === webSocket) this@ReceiverService.webSocket = null
                 if (running) {
-                    Prefs.setReceiverStatus(
-                        this@ReceiverService,
-                        "disconnected ($code), reconnecting at ${timeNow()}"
-                    )
-                    updateServiceNotification("Disconnected • reconnecting")
+                    updateServiceNotification("Reconnecting…")
                     scheduleReconnect()
                 }
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                if (this@ReceiverService.webSocket === webSocket) {
-                    this@ReceiverService.webSocket = null
-                }
+                if (this@ReceiverService.webSocket === webSocket) this@ReceiverService.webSocket = null
                 if (running) {
-                    val reason = t.message?.take(80) ?: t.javaClass.simpleName
-                    Prefs.setReceiverStatus(
-                        this@ReceiverService,
-                        "FAILED ${t.javaClass.simpleName}: $reason"
-                    )
-                    updateServiceNotification("Connection lost • retrying")
+                    updateServiceNotification("Reconnecting…")
                     scheduleReconnect()
                 }
             }
@@ -146,7 +116,6 @@ class ReceiverService : Service() {
 
     private fun scheduleReconnect() {
         if (!running || !reconnectScheduled.compareAndSet(false, true)) return
-
         reconnectExecutor.schedule({
             reconnectScheduled.set(false)
             if (running) connectWebSocket()
@@ -155,7 +124,6 @@ class ReceiverService : Service() {
 
     private fun handleRelayLine(pairCode: String, line: String) {
         if (line.isBlank()) return
-
         try {
             val envelope = JSONObject(line)
             if (envelope.optString("event") != "message") return
@@ -166,14 +134,10 @@ class ReceiverService : Service() {
             val encrypted = envelope.optString("message")
             if (encrypted.isBlank()) return
 
-            val plaintext = CryptoBox.decrypt(pairCode, encrypted)
-            val payload = MirrorPayload.fromJson(plaintext)
+            val payload = MirrorPayload.fromJson(CryptoBox.decrypt(pairCode, encrypted))
             showMirroredNotification(payload, id)
-
             if (id.isNotBlank()) Prefs.setLastMessageId(this, id)
-            Prefs.setLastReceive(this, "${payload.appName}: ${payload.title.take(50)} at ${timeNow()}")
         } catch (_: Exception) {
-            // Ignore keepalives, malformed messages, and traffic encrypted with another Pair Code.
         }
     }
 
@@ -194,73 +158,50 @@ class ReceiverService : Service() {
             .setContentTitle(displayTitle)
             .setContentText(body)
             .setSubText(sourceApp)
-            .setStyle(
-                Notification.BigTextStyle()
-                    .setBigContentTitle(displayTitle)
-                    .bigText(body)
-            )
+            .setStyle(Notification.BigTextStyle().setBigContentTitle(displayTitle).bigText(body))
             .setAutoCancel(true)
             .setWhen(payload.postTime.takeIf { it > 0 } ?: System.currentTimeMillis())
             .build()
 
         val stableKey = payload.notificationKey.ifBlank { relayId }
-        val notificationId = (payload.packageName + ":" + stableKey).hashCode()
-        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        manager.notify(notificationId, notification)
+        val id = (payload.packageName + ":" + stableKey).hashCode()
+        (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).notify(id, notification)
     }
 
     private fun createChannels() {
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-
         manager.createNotificationChannel(
-            NotificationChannel(
-                CHANNEL_SERVICE,
-                "Notification receiver service",
-                NotificationManager.IMPORTANCE_MIN
-            ).apply {
-                description = "Keeps the encrypted Internet receiver connected"
+            NotificationChannel(CHANNEL_SERVICE, "Receiver", NotificationManager.IMPORTANCE_MIN).apply {
                 setShowBadge(false)
             }
         )
-
         manager.createNotificationChannel(
-            NotificationChannel(
-                CHANNEL_MIRRORED,
-                "Mirrored notifications",
-                NotificationManager.IMPORTANCE_DEFAULT
-            ).apply {
-                description = "Notifications mirrored from the paired Sender phone"
-            }
+            NotificationChannel(CHANNEL_MIRRORED, "Mirrored", NotificationManager.IMPORTANCE_DEFAULT)
         )
     }
 
     private fun serviceNotification(status: String): Notification =
         Notification.Builder(this, CHANNEL_SERVICE)
             .setSmallIcon(R.drawable.ic_notification)
-            .setContentTitle("Notification receiver")
+            .setContentTitle("Notification")
             .setContentText(status)
             .setOngoing(true)
             .build()
 
     private fun updateServiceNotification(status: String) {
-        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        manager.notify(SERVICE_NOTIFICATION_ID, serviceNotification(status))
+        (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
+            .notify(SERVICE_NOTIFICATION_ID, serviceNotification(status))
     }
 
     private fun stopReceiver() {
         running = false
-        webSocket?.close(1000, "Receiver stopped")
+        webSocket?.close(1000, "stop")
         webSocket = null
-        Prefs.setReceiverStatus(this, "stopped at ${timeNow()}")
         stopForeground(true)
         stopSelf()
     }
 
-    private fun timeNow(): String =
-        SimpleDateFormat("HH:mm:ss", Locale.US).format(Date())
-
     companion object {
-        const val ACTION_STOP = "com.mtpali.notification.STOP_RECEIVER"
         private const val SERVICE_NOTIFICATION_ID = 1001
         private const val CHANNEL_SERVICE = "receiver_service"
         private const val CHANNEL_MIRRORED = "mirrored_notifications"
