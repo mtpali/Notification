@@ -24,6 +24,8 @@ class MainActivity : Activity() {
     private lateinit var stableRadio: RadioButton
     private lateinit var hiddenRadio: RadioButton
     private lateinit var pairInput: EditText
+    private lateinit var relayUrlInput: EditText
+    private lateinit var relayTokenInput: EditText
     private lateinit var senderInfo: TextView
     private lateinit var receiverInfo: TextView
 
@@ -67,6 +69,26 @@ class MainActivity : Activity() {
                 pairInput.setSelection(pairInput.text.length)
             }
         })
+
+        root.addView(sectionTitle("Secure Relay"))
+        root.addView(TextView(this).apply {
+            text = "Use the same Relay URL and Relay key on both phones. The key is stored only on the devices."
+            setPadding(0, 0, 0, dp(4))
+        })
+        relayUrlInput = EditText(this).apply {
+            hint = "https://your-worker.workers.dev"
+            setSingleLine(true)
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+            setText(Prefs.relayUrl(this@MainActivity))
+        }
+        root.addView(relayUrlInput)
+        relayTokenInput = EditText(this).apply {
+            hint = "Relay key"
+            setSingleLine(true)
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+            setText(Prefs.relayToken(this@MainActivity))
+        }
+        root.addView(relayTokenInput)
         root.addView(Button(this).apply {
             text = "Save"
             setOnClickListener { saveSettings(true) }
@@ -91,6 +113,11 @@ class MainActivity : Activity() {
                     toast("Select Sender")
                     return@setOnClickListener
                 }
+                if (!Prefs.relayConfigured(this@MainActivity)) {
+                    toast("Configure Secure Relay")
+                    return@setOnClickListener
+                }
+
                 val now = System.currentTimeMillis()
                 RelayClient.publish(
                     applicationContext,
@@ -102,8 +129,9 @@ class MainActivity : Activity() {
                         postTime = now,
                         notificationKey = "test-$now"
                     )
-                )
-                toast("Sent")
+                ) { ok ->
+                    runOnUiThread { toast(if (ok) "Sent" else "Relay failed") }
+                }
             }
         })
         senderInfo = TextView(this).apply { setPadding(0, dp(4), 0, 0) }
@@ -190,21 +218,31 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
-        if (Prefs.mode(this) == Prefs.MODE_RECEIVER && Prefs.receiverEnabled(this)) {
-            when (Prefs.receiverTransport(this)) {
-                Prefs.RECEIVER_PUSH -> {
-                    FcmTransport.sync(this) { runOnUiThread { updateInfo() } }
-                    FcmTransport.refreshToken(this) { runOnUiThread { updateInfo() } }
-                }
 
-                Prefs.RECEIVER_HIDDEN -> {
-                    if (hasNotificationAccess()) {
-                        startHiddenReceiverService()
-                        MirrorNotificationListener.refresh(this)
+        when (Prefs.mode(this)) {
+            Prefs.MODE_SENDER -> {
+                FcmTransport.sync(this) { runOnUiThread { updateInfo() } }
+                FcmTransport.refreshToken(this) { runOnUiThread { updateInfo() } }
+                MirrorNotificationListener.refresh(this)
+            }
+
+            Prefs.MODE_RECEIVER -> if (Prefs.receiverEnabled(this)) {
+                when (Prefs.receiverTransport(this)) {
+                    Prefs.RECEIVER_PUSH -> {
+                        FcmTransport.sync(this) { runOnUiThread { updateInfo() } }
+                        FcmTransport.refreshToken(this) { runOnUiThread { updateInfo() } }
+                    }
+
+                    Prefs.RECEIVER_HIDDEN -> {
+                        if (hasNotificationAccess()) {
+                            startHiddenReceiverService()
+                            MirrorNotificationListener.refresh(this)
+                        }
                     }
                 }
             }
         }
+
         if (::senderInfo.isInitialized) updateInfo()
     }
 
@@ -231,6 +269,8 @@ class MainActivity : Activity() {
 
         Prefs.setMode(this, mode)
         Prefs.setPairCode(this, code)
+        Prefs.setRelayUrl(this, relayUrlInput.text.toString())
+        Prefs.setRelayToken(this, relayTokenInput.text.toString())
         Prefs.setReceiverTransport(this, transport)
 
         if (mode == Prefs.MODE_SENDER) {
@@ -307,7 +347,9 @@ class MainActivity : Activity() {
     private fun updateInfo() {
         val access = hasNotificationAccess()
         val apps = if (Prefs.forwardAllApps(this)) "All apps" else "${Prefs.selectedApps(this).size} apps"
-        senderInfo.text = "Access: ${if (access) "ON" else "OFF"} • $apps"
+        val relay = if (Prefs.relayConfigured(this)) "relay ready" else "relay pending"
+        val fcmTopic = if (Prefs.fcmSubscribedTopic(this).isBlank()) "push pending" else "push ready"
+        senderInfo.text = "Access: ${if (access) "ON" else "OFF"} • $apps • $relay • $fcmTopic"
 
         val transport = when (Prefs.receiverTransport(this)) {
             Prefs.RECEIVER_PUSH -> "Push"
@@ -318,7 +360,7 @@ class MainActivity : Activity() {
         val pushStatus = if (Prefs.receiverTransport(this) == Prefs.RECEIVER_PUSH) {
             val token = if (Prefs.fcmToken(this).isBlank()) "token pending" else "token ready"
             val topic = if (Prefs.fcmSubscribedTopic(this).isBlank()) "topic pending" else "topic ready"
-            " • $token • $topic"
+            " • $token • $topic • $relay"
         } else ""
         receiverInfo.text = "$transport • ${if (enabled) "ON" else "OFF"}$pushStatus"
     }
