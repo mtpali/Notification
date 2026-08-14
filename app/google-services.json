@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "303827746717",
+    "project_id": "notification-2515e",
+    "storage_bucket": "notification-2515e.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:303827746717:android:182269c3b142bdf3853974",
+        "android_client_info": {
+          "package_name": "com.mtpali.notification"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAVqqeCrUooXaXiyQBT_HJyUlxEry7hHOk"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
