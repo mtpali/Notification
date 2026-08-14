@@ -5,14 +5,25 @@ let cachedAccessTokenUntil = 0;
 
 export default {
   async fetch(request, env) {
-    if (request.method !== "POST") {
-      return json({ error: "method_not_allowed" }, 405);
+    const url = new URL(request.url);
+
+    if (request.method === "GET" && url.pathname === "/health") {
+      return json({ ok: true }, 200);
+    }
+
+    if (request.method !== "POST" || url.pathname !== "/v1/send") {
+      return json({ error: "not_found" }, 404);
     }
 
     const expected = env.RELAY_TOKEN || "";
     const provided = request.headers.get("Authorization") || "";
-    if (!expected || provided !== `Bearer ${expected}`) {
+    if (expected.length < 24 || provided !== `Bearer ${expected}`) {
       return json({ error: "unauthorized" }, 401);
+    }
+
+    const contentType = request.headers.get("Content-Type") || "";
+    if (!contentType.toLowerCase().startsWith("application/json")) {
+      return json({ error: "invalid_content_type" }, 415);
     }
 
     let body;
@@ -62,14 +73,16 @@ export default {
         response = await sendFcm(projectId, accessToken, topic, kind, payload, id);
       }
 
-      const responseText = await response.text();
       if (!response.ok) {
-        return json({ error: "fcm_error", status: response.status, detail: responseText.slice(0, 800) }, 502);
+        const responseText = await response.text();
+        console.error("FCM send failed", response.status, responseText.slice(0, 300));
+        return json({ error: "fcm_error", status: response.status }, 502);
       }
 
       return json({ ok: true, id }, 200);
     } catch (error) {
-      return json({ error: "relay_error", detail: String(error).slice(0, 800) }, 500);
+      console.error("Relay error", String(error).slice(0, 300));
+      return json({ error: "relay_error" }, 500);
     }
   },
 };
@@ -84,11 +97,7 @@ async function sendFcm(projectId, accessToken, topic, kind, payload, id) {
     body: JSON.stringify({
       message: {
         topic,
-        data: {
-          kind,
-          payload,
-          id,
-        },
+        data: { kind, payload, id },
         android: {
           priority: "high",
           ttl: "300s",
@@ -139,7 +148,7 @@ async function getAccessToken(serviceAccount) {
   });
 
   if (!tokenResponse.ok) {
-    throw new Error(`oauth_${tokenResponse.status}:${(await tokenResponse.text()).slice(0, 400)}`);
+    throw new Error(`oauth_${tokenResponse.status}`);
   }
 
   const token = await tokenResponse.json();
