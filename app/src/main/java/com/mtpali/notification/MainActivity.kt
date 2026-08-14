@@ -5,7 +5,6 @@ import android.content.Intent
 import android.os.Bundle
 import android.provider.Settings
 import android.text.InputType
-import android.view.View
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
@@ -58,19 +57,19 @@ class MainActivity : Activity() {
 
         root.addView(sectionTitle("2. Pair Code"))
         root.addView(TextView(this).apply {
-            text = "Use exactly the same Pair Code on both phones. Keep it secret."
+            text = "Use the same simple 6-digit code on both phones."
         })
 
         pairInput = EditText(this).apply {
-            hint = "Pair Code"
+            hint = "6-digit Pair Code"
             setSingleLine(true)
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
+            inputType = InputType.TYPE_CLASS_NUMBER
             setText(Prefs.pairCode(this@MainActivity))
         }
         root.addView(pairInput)
 
         root.addView(Button(this).apply {
-            text = "Generate a new Pair Code"
+            text = "Generate 6-digit Pair Code"
             setOnClickListener {
                 pairInput.setText(CryptoBox.generatePairCode())
                 pairInput.setSelection(pairInput.text.length)
@@ -106,15 +105,18 @@ class MainActivity : Activity() {
         root.addView(Button(this).apply {
             text = "Start Receiver"
             setOnClickListener {
-                saveSettings(showToast = false)
+                if (!saveSettings(showToast = false)) return@setOnClickListener
+
                 if (Prefs.mode(this@MainActivity) != Prefs.MODE_RECEIVER) {
                     Toast.makeText(this@MainActivity, "Select Receiver first", Toast.LENGTH_SHORT).show()
                     return@setOnClickListener
                 }
-                if (Prefs.pairCode(this@MainActivity).isBlank()) {
-                    Toast.makeText(this@MainActivity, "Enter a Pair Code first", Toast.LENGTH_SHORT).show()
+
+                if (!CryptoBox.isValidPairCode(Prefs.pairCode(this@MainActivity))) {
+                    Toast.makeText(this@MainActivity, "Enter a 6-digit Pair Code first", Toast.LENGTH_SHORT).show()
                     return@setOnClickListener
                 }
+
                 startForegroundService(Intent(this@MainActivity, ReceiverService::class.java))
                 Toast.makeText(this@MainActivity, "Receiver started", Toast.LENGTH_SHORT).show()
                 updateStatus()
@@ -139,11 +141,22 @@ class MainActivity : Activity() {
         if (::statusText.isInitialized) updateStatus()
     }
 
-    private fun saveSettings(showToast: Boolean) {
+    private fun saveSettings(showToast: Boolean): Boolean {
+        val pairCode = pairInput.text.toString().trim()
+
+        if (pairCode.isNotEmpty() && !CryptoBox.isValidPairCode(pairCode)) {
+            pairInput.error = "Pair Code must be exactly 6 digits"
+            if (showToast) {
+                Toast.makeText(this, "Pair Code must be exactly 6 digits", Toast.LENGTH_SHORT).show()
+            }
+            return false
+        }
+
+        pairInput.error = null
         val previousMode = Prefs.mode(this)
         val mode = if (receiverRadio.isChecked) Prefs.MODE_RECEIVER else Prefs.MODE_SENDER
         Prefs.setMode(this, mode)
-        Prefs.setPairCode(this, pairInput.text.toString())
+        Prefs.setPairCode(this, pairCode)
 
         if (previousMode == Prefs.MODE_RECEIVER && mode == Prefs.MODE_SENDER) {
             stopService(Intent(this, ReceiverService::class.java))
@@ -151,6 +164,7 @@ class MainActivity : Activity() {
 
         if (showToast) Toast.makeText(this, "Settings saved", Toast.LENGTH_SHORT).show()
         updateStatus()
+        return true
     }
 
     private fun updateStatus() {
@@ -166,7 +180,12 @@ class MainActivity : Activity() {
         }
 
         val role = if (Prefs.mode(this) == Prefs.MODE_RECEIVER) "Receiver" else "Sender"
-        val paired = if (Prefs.pairCode(this).isBlank()) "not configured" else "configured"
+        val pairCode = Prefs.pairCode(this)
+        val paired = when {
+            pairCode.isBlank() -> "not configured"
+            CryptoBox.isValidPairCode(pairCode) -> "6-digit code configured"
+            else -> "old code - generate a new 6-digit code"
+        }
         val access = if (notificationAccess) "enabled" else "not enabled"
 
         statusText.text = "Role: $role\nPair Code: $paired\nNotification Access: $access"
