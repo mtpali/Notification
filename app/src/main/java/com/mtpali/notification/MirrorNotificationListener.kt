@@ -59,7 +59,7 @@ class MirrorNotificationListener : NotificationListenerService() {
         super.onListenerConnected()
         activeInstance = this
         listenerReady = true
-        refreshState()
+        refreshStateSafely()
     }
 
     override fun onListenerDisconnected() {
@@ -70,27 +70,11 @@ class MirrorNotificationListener : NotificationListenerService() {
         stopCommandSocket()
         stopHiddenReceiver()
         super.onListenerDisconnected()
+
         if (shouldRebind) requestSelfRebind()
     }
 
-    override fun onTaskRemoved(rootIntent: Intent?) {
-        super.onTaskRemoved(rootIntent)
-        if (!shouldKeepListenerBound()) return
-
-        if (listenerReady && Prefs.mode(this) == Prefs.MODE_RECEIVER &&
-            Prefs.receiverTransport(this) == Prefs.RECEIVER_HIDDEN &&
-            Prefs.receiverEnabled(this)
-        ) {
-            mainHandler.post {
-                stopReceiverSocket()
-                refreshState()
-            }
-        }
-        requestSelfRebind()
-    }
-
     override fun onDestroy() {
-        val shouldRebind = shouldKeepListenerBound()
         listenerReady = false
         if (activeInstance === this) activeInstance = null
         actionableKeys.clear()
@@ -102,7 +86,6 @@ class MirrorNotificationListener : NotificationListenerService() {
         commandClient = null
         receiverClient = null
         super.onDestroy()
-        if (shouldRebind) requestSelfRebind()
     }
 
     override fun onNotificationPosted(sbn: StatusBarNotification?) {
@@ -159,6 +142,16 @@ class MirrorNotificationListener : NotificationListenerService() {
         if (sbn != null && actionableKeys.remove(sbn.key)) updateCommandSocketState()
     }
 
+    private fun refreshStateSafely() {
+        try {
+            refreshState()
+        } catch (_: Exception) {
+            if (Prefs.mode(this) == Prefs.MODE_RECEIVER) {
+                stopHiddenReceiver()
+            }
+        }
+    }
+
     private fun refreshState() {
         if (!listenerReady) return
 
@@ -171,17 +164,6 @@ class MirrorNotificationListener : NotificationListenerService() {
             stopCommandSocket()
             if (shouldRunHiddenReceiver()) startHiddenReceiver() else stopHiddenReceiver()
         }
-    }
-
-    private fun forceRefreshFromUi() {
-        if (!listenerReady) return
-        if (Prefs.mode(this) == Prefs.MODE_RECEIVER &&
-            Prefs.receiverTransport(this) == Prefs.RECEIVER_HIDDEN &&
-            Prefs.receiverEnabled(this)
-        ) {
-            stopReceiverSocket()
-        }
-        refreshState()
     }
 
     private fun shouldKeepListenerBound(): Boolean {
@@ -250,51 +232,60 @@ class MirrorNotificationListener : NotificationListenerService() {
         stopCommandSocket()
         commandPair = pairCode
 
-        val client = commandClient ?: newClient().also { commandClient = it }
-        val lastId = Prefs.lastCommandId(this)
-        val since = if (lastId.isBlank()) "2m" else lastId
-        val request = Request.Builder()
-            .url(
-                "wss://ntfy.sh/${CryptoBox.commandTopic(pairCode)}/ws?since=" +
-                    URLEncoder.encode(since, "UTF-8")
-            )
-            .header("User-Agent", "Notification-Android/0.7.1")
-            .build()
+        try {
+            val client = commandClient ?: newClient().also { commandClient = it }
+            val lastId = Prefs.lastCommandId(this)
+            val since = if (lastId.isBlank()) "2m" else lastId
+            val request = Request.Builder()
+                .url(
+                    "wss://ntfy.sh/${CryptoBox.commandTopic(pairCode)}/ws?since=" +
+                        URLEncoder.encode(since, "UTF-8")
+                )
+                .header("User-Agent", "Notification-Android/0.7.2")
+                .build()
 
-        commandSocket = client.newWebSocket(request, object : WebSocketListener() {
-            override fun onMessage(webSocket: WebSocket, text: String) {
-                handleCommandLine(pairCode, text)
-            }
+            commandSocket = client.newWebSocket(request, object : WebSocketListener() {
+                override fun onMessage(webSocket: WebSocket, text: String) {
+                    handleCommandLine(pairCode, text)
+                }
 
-            override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
-                webSocket.close(code, reason)
-            }
+                override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                    webSocket.close(code, reason)
+                }
 
-            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                if (commandSocket === webSocket) commandSocket = null
-                if (listenerReady && actionableKeys.isNotEmpty() &&
-                    Prefs.mode(this@MirrorNotificationListener) == Prefs.MODE_SENDER
-                ) scheduleCommandReconnect()
-            }
+                override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                    if (commandSocket === webSocket) commandSocket = null
+                    if (listenerReady && actionableKeys.isNotEmpty() &&
+                        Prefs.mode(this@MirrorNotificationListener) == Prefs.MODE_SENDER
+                    ) scheduleCommandReconnect()
+                }
 
-            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                if (commandSocket === webSocket) commandSocket = null
-                if (listenerReady && actionableKeys.isNotEmpty() &&
-                    Prefs.mode(this@MirrorNotificationListener) == Prefs.MODE_SENDER
-                ) scheduleCommandReconnect()
-            }
-        })
+                override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                    if (commandSocket === webSocket) commandSocket = null
+                    if (listenerReady && actionableKeys.isNotEmpty() &&
+                        Prefs.mode(this@MirrorNotificationListener) == Prefs.MODE_SENDER
+                    ) scheduleCommandReconnect()
+                }
+            })
+        } catch (_: Exception) {
+            commandSocket = null
+            if (listenerReady && actionableKeys.isNotEmpty()) scheduleCommandReconnect()
+        }
     }
 
     private fun scheduleCommandReconnect() {
-        if (!listenerReady || actionableKeys.isEmpty() ||
+        if (!listenerReady || actionableKeys.isEmpty() || reconnectExecutor.isShutdown ||
             !commandReconnectScheduled.compareAndSet(false, true)
         ) return
 
-        reconnectExecutor.schedule({
+        try {
+            reconnectExecutor.schedule({
+                commandReconnectScheduled.set(false)
+                if (listenerReady && actionableKeys.isNotEmpty()) ensureCommandSocket()
+            }, 2, TimeUnit.SECONDS)
+        } catch (_: RuntimeException) {
             commandReconnectScheduled.set(false)
-            if (listenerReady && actionableKeys.isNotEmpty()) ensureCommandSocket()
-        }, 2, TimeUnit.SECONDS)
+        }
     }
 
     private fun stopCommandSocket() {
@@ -375,8 +366,8 @@ class MirrorNotificationListener : NotificationListenerService() {
     }
 
     private fun stopHiddenReceiver() {
-        unregisterReceiverNetworkCallback()
         receiverNetworkAvailable = false
+        unregisterReceiverNetworkCallback()
         stopReceiverSocket()
     }
 
@@ -386,7 +377,7 @@ class MirrorNotificationListener : NotificationListenerService() {
             connectivityManager.registerDefaultNetworkCallback(receiverNetworkCallback)
             receiverNetworkCallbackRegistered = true
         } catch (_: Exception) {
-            receiverNetworkAvailable = true
+            receiverNetworkAvailable = isInternetAvailable()
         }
     }
 
@@ -429,48 +420,63 @@ class MirrorNotificationListener : NotificationListenerService() {
         stopReceiverSocket()
         receiverPair = pairCode
 
-        val client = receiverClient ?: newClient().also { receiverClient = it }
-        val lastId = Prefs.lastMessageId(this)
-        val since = if (lastId.isBlank()) "10m" else lastId
-        val request = Request.Builder()
-            .url(
-                "wss://ntfy.sh/${CryptoBox.topic(pairCode)}/ws?since=" +
-                    URLEncoder.encode(since, "UTF-8")
-            )
-            .header("User-Agent", "Notification-Android/0.7.1")
-            .build()
+        try {
+            val client = receiverClient ?: newClient().also { receiverClient = it }
+            val lastId = Prefs.lastMessageId(this)
+            val since = if (lastId.isBlank()) "10m" else lastId
+            val request = Request.Builder()
+                .url(
+                    "wss://ntfy.sh/${CryptoBox.topic(pairCode)}/ws?since=" +
+                        URLEncoder.encode(since, "UTF-8")
+                )
+                .header("User-Agent", "Notification-Android/0.7.2")
+                .build()
 
-        receiverSocket = client.newWebSocket(request, object : WebSocketListener() {
-            override fun onMessage(webSocket: WebSocket, text: String) {
-                handleReceiverLine(pairCode, text)
-            }
+            receiverSocket = client.newWebSocket(request, object : WebSocketListener() {
+                override fun onMessage(webSocket: WebSocket, text: String) {
+                    handleReceiverLine(pairCode, text)
+                }
 
-            override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
-                webSocket.close(code, reason)
-            }
+                override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                    webSocket.close(code, reason)
+                }
 
-            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                if (receiverSocket === webSocket) receiverSocket = null
-                if (shouldRunHiddenReceiver() && receiverNetworkAvailable) scheduleReceiverReconnect()
-            }
+                override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                    if (receiverSocket === webSocket) receiverSocket = null
+                    if (shouldRunHiddenReceiver() && receiverNetworkAvailable) {
+                        scheduleReceiverReconnect()
+                    }
+                }
 
-            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                if (receiverSocket === webSocket) receiverSocket = null
-                receiverNetworkAvailable = isInternetAvailable()
-                if (shouldRunHiddenReceiver() && receiverNetworkAvailable) scheduleReceiverReconnect()
+                override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                    if (receiverSocket === webSocket) receiverSocket = null
+                    receiverNetworkAvailable = isInternetAvailable()
+                    if (shouldRunHiddenReceiver() && receiverNetworkAvailable) {
+                        scheduleReceiverReconnect()
+                    }
+                }
+            })
+        } catch (_: Exception) {
+            receiverSocket = null
+            if (shouldRunHiddenReceiver() && receiverNetworkAvailable) {
+                scheduleReceiverReconnect()
             }
-        })
+        }
     }
 
     private fun scheduleReceiverReconnect() {
-        if (!shouldRunHiddenReceiver() || !receiverNetworkAvailable ||
+        if (!shouldRunHiddenReceiver() || !receiverNetworkAvailable || reconnectExecutor.isShutdown ||
             !receiverReconnectScheduled.compareAndSet(false, true)
         ) return
 
-        reconnectExecutor.schedule({
+        try {
+            reconnectExecutor.schedule({
+                receiverReconnectScheduled.set(false)
+                if (shouldRunHiddenReceiver() && receiverNetworkAvailable) ensureReceiverSocket()
+            }, 2, TimeUnit.SECONDS)
+        } catch (_: RuntimeException) {
             receiverReconnectScheduled.set(false)
-            if (shouldRunHiddenReceiver() && receiverNetworkAvailable) ensureReceiverSocket()
-        }, 2, TimeUnit.SECONDS)
+        }
     }
 
     private fun stopReceiverSocket() {
@@ -513,17 +519,9 @@ class MirrorNotificationListener : NotificationListenerService() {
         @Volatile private var activeInstance: MirrorNotificationListener? = null
 
         fun refresh(context: Context) {
-            val instance = activeInstance
-            if (instance != null && instance.listenerReady) {
-                instance.mainHandler.post { instance.forceRefreshFromUi() }
-            } else {
-                try {
-                    NotificationListenerService.requestRebind(
-                        ComponentName(context, MirrorNotificationListener::class.java)
-                    )
-                } catch (_: Exception) {
-                }
-            }
+            val instance = activeInstance ?: return
+            if (!instance.listenerReady) return
+            instance.mainHandler.post { instance.refreshStateSafely() }
         }
     }
 }
