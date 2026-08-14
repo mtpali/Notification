@@ -53,17 +53,18 @@ class MirrorNotificationListener : NotificationListenerService() {
         val canMarkRead = actions.any(::isMarkReadAction)
 
         val extras = notification.extras
-        val title = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString().orEmpty()
+        val title = extras.getCharSequence(Notification.EXTRA_TITLE)
+            ?.toString().orEmpty().take(MAX_TITLE_LENGTH)
         val bigText = extras.getCharSequence(Notification.EXTRA_BIG_TEXT)?.toString().orEmpty()
         val normalText = extras.getCharSequence(Notification.EXTRA_TEXT)?.toString().orEmpty()
-        val text = bigText.ifBlank { normalText }
+        val text = bigText.ifBlank { normalText }.take(MAX_TEXT_LENGTH)
 
         val appName = try {
             val info = packageManager.getApplicationInfo(sbn.packageName, 0)
             packageManager.getApplicationLabel(info).toString()
         } catch (_: Exception) {
             sbn.packageName
-        }
+        }.take(MAX_APP_NAME_LENGTH)
 
         RelayClient.publish(
             applicationContext,
@@ -179,6 +180,9 @@ class MirrorNotificationListener : NotificationListenerService() {
 
     companion object {
         private const val COMMAND_MAX_AGE_MS = 10 * 60_000L
+        private const val MAX_APP_NAME_LENGTH = 128
+        private const val MAX_TITLE_LENGTH = 256
+        private const val MAX_TEXT_LENGTH = 1800
 
         @Volatile private var activeInstance: MirrorNotificationListener? = null
 
