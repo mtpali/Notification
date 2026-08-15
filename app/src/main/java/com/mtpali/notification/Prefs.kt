@@ -22,8 +22,8 @@ object Prefs {
     const val MODE_RECEIVER = "receiver"
 
     const val RECEIVER_STABLE = "stable"
-    const val RECEIVER_HIDDEN = "hidden"
     const val RECEIVER_PUSH = "push"
+    private const val LEGACY_HIDDEN = "hidden"
 
     const val DEFAULT_RELAY_URL =
         "https://notification.mhdvi45.workers.dev"
@@ -54,11 +54,18 @@ object Prefs {
         }.apply()
     }
 
-    fun receiverTransport(context: Context): String =
-        prefs(context).getString(KEY_RECEIVER_TRANSPORT, RECEIVER_STABLE) ?: RECEIVER_STABLE
+    fun receiverTransport(context: Context): String {
+        val stored = prefs(context).getString(KEY_RECEIVER_TRANSPORT, RECEIVER_PUSH)
+        return when (stored) {
+            RECEIVER_STABLE -> RECEIVER_STABLE
+            LEGACY_HIDDEN -> RECEIVER_PUSH
+            else -> RECEIVER_PUSH
+        }
+    }
 
     fun setReceiverTransport(context: Context, value: String) {
-        prefs(context).edit().putString(KEY_RECEIVER_TRANSPORT, value).apply()
+        val normalized = if (value == RECEIVER_STABLE) RECEIVER_STABLE else RECEIVER_PUSH
+        prefs(context).edit().putString(KEY_RECEIVER_TRANSPORT, normalized).apply()
     }
 
     fun receiverEnabled(context: Context): Boolean {
