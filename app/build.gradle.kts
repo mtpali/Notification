@@ -12,8 +12,8 @@ android {
         applicationId = "com.mtpali.notification"
         minSdk = 28
         targetSdk = 29
-        versionCode = 13
-        versionName = "0.9.0-alpha1"
+        versionCode = 14
+        versionName = "0.9.0-alpha2"
     }
 
     buildTypes {
