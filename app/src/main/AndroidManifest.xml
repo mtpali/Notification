@@ -53,11 +53,6 @@
             android:name=".ReceiverService"
             android:exported="false" />
 
-        <service
-            android:name=".HiddenReceiverService"
-            android:exported="false"
-            android:stopWithTask="false" />
-
         <receiver
             android:name=".ActionCommandReceiver"
             android:exported="false" />
