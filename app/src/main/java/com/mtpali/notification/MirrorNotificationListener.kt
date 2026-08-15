@@ -86,13 +86,8 @@ class MirrorNotificationListener : NotificationListenerService() {
         if (Prefs.mode(this) == Prefs.MODE_SENDER) drainPendingCommand()
     }
 
-    private fun shouldKeepListenerBound(): Boolean {
-        if (Prefs.mode(this) == Prefs.MODE_SENDER) return true
-        return Prefs.mode(this) == Prefs.MODE_RECEIVER &&
-            Prefs.receiverTransport(this) == Prefs.RECEIVER_HIDDEN &&
-            Prefs.receiverEnabled(this) &&
-            CryptoBox.isValidPairCode(Prefs.pairCode(this))
-    }
+    private fun shouldKeepListenerBound(): Boolean =
+        Prefs.mode(this) == Prefs.MODE_SENDER
 
     private fun requestSelfRebind() {
         try {
@@ -209,13 +204,8 @@ class MirrorNotificationListener : NotificationListenerService() {
             }
         }
 
-        private fun shouldRequestBinding(context: Context): Boolean {
-            if (Prefs.mode(context) == Prefs.MODE_SENDER) return true
-            return Prefs.mode(context) == Prefs.MODE_RECEIVER &&
-                Prefs.receiverTransport(context) == Prefs.RECEIVER_HIDDEN &&
-                Prefs.receiverEnabled(context) &&
-                CryptoBox.isValidPairCode(Prefs.pairCode(context))
-        }
+        private fun shouldRequestBinding(context: Context): Boolean =
+            Prefs.mode(context) == Prefs.MODE_SENDER
 
         private fun requestRebind(context: Context) {
             try {
