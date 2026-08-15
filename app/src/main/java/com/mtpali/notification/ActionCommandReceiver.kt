@@ -15,45 +15,50 @@ class ActionCommandReceiver : BroadcastReceiver() {
         val notificationKey = intent.getStringExtra(EXTRA_NOTIFICATION_KEY).orEmpty()
         if (notificationKey.isBlank()) return
 
-        when (intent.action) {
+        val command = when (intent.action) {
             ACTION_REPLY -> {
                 val text = RemoteInput.getResultsFromIntent(intent)
                     ?.getCharSequence(KEY_REPLY_TEXT)
                     ?.toString()
                     ?.trim()
                     .orEmpty()
+                    .take(MAX_REPLY_LENGTH)
                 if (text.isBlank()) return
 
-                RelayClient.publishCommand(
-                    context.applicationContext,
-                    CommandPayload(
-                        type = CommandPayload.TYPE_REPLY,
-                        packageName = packageName,
-                        notificationKey = notificationKey,
-                        text = text
-                    )
+                CommandPayload(
+                    type = CommandPayload.TYPE_REPLY,
+                    packageName = packageName,
+                    notificationKey = notificationKey,
+                    text = text
                 )
             }
 
             ACTION_MARK_READ -> {
-                RelayClient.publishCommand(
-                    context.applicationContext,
-                    CommandPayload(
-                        type = CommandPayload.TYPE_MARK_READ,
-                        packageName = packageName,
-                        notificationKey = notificationKey
-                    )
-                )
                 val localId = intent.getIntExtra(EXTRA_LOCAL_ID, Int.MIN_VALUE)
                 if (localId != Int.MIN_VALUE) {
                     (context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
                         .cancel(localId)
                 }
+
+                CommandPayload(
+                    type = CommandPayload.TYPE_MARK_READ,
+                    packageName = packageName,
+                    notificationKey = notificationKey
+                )
             }
+
+            else -> return
+        }
+
+        val pending = goAsync()
+        RelayClient.publishCommand(context.applicationContext, command) {
+            pending.finish()
         }
     }
 
     companion object {
+        private const val MAX_REPLY_LENGTH = 1000
+
         const val ACTION_REPLY = "com.mtpali.notification.REPLY"
         const val ACTION_MARK_READ = "com.mtpali.notification.MARK_READ"
         const val KEY_REPLY_TEXT = "reply_text"

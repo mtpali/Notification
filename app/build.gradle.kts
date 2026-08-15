@@ -1,6 +1,7 @@
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
+    id("com.google.gms.google-services")
 }
 
 android {
@@ -11,14 +12,30 @@ android {
         applicationId = "com.mtpali.notification"
         minSdk = 28
         targetSdk = 29
-        versionCode = 6
-        versionName = "0.6.0"
+        versionCode = 16
+        versionName = "1.0.0"
+    }
+
+    val ciDebugKeystore = file("ci-debug.keystore")
+
+    signingConfigs {
+        if (ciDebugKeystore.exists()) {
+            create("ciDebug") {
+                storeFile = ciDebugKeystore
+                storePassword = "notification-debug"
+                keyAlias = "notificationdebug"
+                keyPassword = "notification-debug"
+            }
+        }
     }
 
     buildTypes {
         debug {
             isMinifyEnabled = true
             isShrinkResources = true
+            if (ciDebugKeystore.exists()) {
+                signingConfig = signingConfigs.getByName("ciDebug")
+            }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -57,4 +74,6 @@ android {
 
 dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.11.0")
+    implementation(platform("com.google.firebase:firebase-bom:34.16.0"))
+    implementation("com.google.firebase:firebase-messaging")
 }

@@ -1,85 +1,144 @@
 # Notification
 
-A lightweight personal Android notification bridge for Android 9 and Android 10.
+A lightweight personal Android app that mirrors notifications between two phones over the Internet.
 
-## Goal
+Current target devices:
 
-`Notification` mirrors notifications from one Android phone (Sender) to another Android phone (Receiver) over the Internet, even when the two phones are on different networks.
+- Sender: Samsung J7 Core, Android 9
+- Receiver: POCO X3 NFC, Android 10 / MIUI
 
-## v0.1 features
+## Current v0.8 architecture
 
-- One APK for both phones
-- Sender / Receiver mode
-- Android 9 (API 28) and Android 10 (API 29)
-- Notification access through Android `NotificationListenerService`
-- Per-app forwarding filter
-- No in-app account
-- Pairing with a high-entropy Pair Code
-- Internet relay through `ntfy.sh`
-- Client-side AES-GCM encryption before data leaves the Sender
-- Receiver reconnects after temporary network failures
-- Automatic Receiver restart after device boot
-- GitHub Actions debug APK build
+The recommended transport is Firebase Cloud Messaging because it remains available after the Receiver app is swiped from Recents and while the screen is off, without keeping an app-owned WebSocket or foreground service alive.
 
-## Install and pair
+```text
+Samsung Sender
+  -> AES-GCM encrypt on device
+  -> short HTTPS request
+  -> Cloudflare Worker relay
+  -> Firebase Cloud Messaging
+  -> POCO Receiver
+  -> decrypt on device
+  -> mirrored Android notification
+```
 
-1. Download the latest `Notification-debug-apk` artifact from GitHub Actions and extract `app-debug.apk`.
-2. Install the same APK on both phones.
-3. On the Sender, select **Sender**, generate a Pair Code, save it, and open **Notification Access** to allow Notification to read notifications.
-4. Optionally open **Choose apps to forward** and select which apps should be mirrored.
-5. Enter the exact same Pair Code on the second phone, select **Receiver**, save settings, and press **Start Receiver**.
-6. Keep the Pair Code private. It derives both the relay topic and the encryption key.
+Reply and Mark as read use the same path in reverse:
 
-## How it works
+```text
+POCO Receiver
+  -> encrypted command
+  -> Cloudflare Worker relay
+  -> FCM command topic
+  -> Samsung Sender
+  -> NotificationListenerService
+  -> original RemoteInput / PendingIntent action
+```
 
-1. Android calls `NotificationListenerService` when the Sender receives a notification.
-2. The Sender serializes the app name, title, text, timestamp, package name and notification key.
-3. The payload is encrypted locally with AES-GCM using a key derived from the Pair Code.
-4. The encrypted payload is published to a high-entropy `ntfy.sh` topic derived from the same Pair Code.
-5. Receiver maintains an HTTP JSON stream to the relay, reconnects after network changes, decrypts messages locally, and creates mirrored Android notifications.
-6. The last relay message ID is saved so reconnects can request cached messages after temporary Internet interruptions.
+## Privacy and security
 
-## Privacy model
+- Notification contents are encrypted on-device with AES-GCM before leaving the phone.
+- The six-digit Pair Code is not sent to the relay.
+- FCM topics are derived from the Pair Code.
+- The Worker sees only the derived topic, message kind, opaque ciphertext and a random message ID.
+- The Firebase service-account private key is never stored in the APK or repository.
+- `GOOGLE_SERVICE_ACCOUNT_JSON` is stored only as a Cloudflare Worker Secret.
+- `RELAY_TOKEN` is stored as a Cloudflare Worker Secret and locally on the two phones.
 
-The relay server can observe network metadata and the derived topic name, but notification contents are encrypted on-device with AES-GCM. The public `ntfy.sh` service may temporarily cache the encrypted messages to survive short network interruptions. The app explicitly tells ntfy not to forward these relay messages through ntfy's Firebase integration because Notification maintains its own receiver stream.
+## Cloudflare relay
 
-For stronger infrastructure control, a future version can point to a self-hosted ntfy server.
+Worker URL:
 
-## Current limitations
+```text
+https://notification.mhdvi45.workers.dev
+```
 
-- Reply actions are not implemented yet.
-- Two-way notification dismissal is not implemented yet.
-- Images and large notification attachments are not mirrored yet.
-- Pairing currently uses a text Pair Code; QR pairing is planned for a later version.
-- Receiver uses a foreground service to keep an instant connection on Android 9/10, so Android shows a small persistent status notification while Receiver mode is active.
+Health endpoint:
 
-## Build
+```text
+https://notification.mhdvi45.workers.dev/health
+```
 
-GitHub Actions builds a debug APK on every push to `main` and on manual workflow dispatch.
+The Worker source is in:
 
-Build configuration:
+```text
+relay/src/index.js
+```
 
-- JDK 17
-- Android SDK platform 34
-- Android Build Tools 34.0.0
-- Android Gradle Plugin 8.5.2
-- Gradle 8.7
-- Kotlin 1.9.24
-- `minSdk 28`
-- `targetSdk 29`
+Required Cloudflare Secrets:
 
-Local build command if Gradle 8.7 is installed:
+```text
+GOOGLE_SERVICE_ACCOUNT_JSON
+RELAY_TOKEN
+```
+
+`GOOGLE_SERVICE_ACCOUNT_JSON` must contain the complete Firebase service-account JSON. `RELAY_TOKEN` must be a strong private random value of at least 24 characters. Never commit either secret.
+
+The Android app uses the Worker URL as its default Relay URL and appends `/v1/send` itself.
+
+## Device setup
+
+### Samsung Sender
+
+1. Install the current APK.
+2. Select **Sender**.
+3. Enter/generate the Pair Code.
+4. Enter the same private Relay key used for the Cloudflare `RELAY_TOKEN` secret.
+5. Save.
+6. Enable Notification Access.
+7. Choose All apps or selected apps.
+
+The Sender does not need a foreground service or persistent WebSocket. It sends a short HTTPS request only when a notification or test event must be relayed.
+
+### POCO Receiver
+
+1. Install the same APK.
+2. Select **Receiver**.
+3. Enter the exact same Pair Code.
+4. Enter the exact same Relay key.
+5. Select **Push (FCM) • lowest battery**.
+6. Save and press Start.
+
+Push mode does not require Notification Access, a Receiver WebSocket, a foreground service, or a persistent status notification.
+
+## Validated behavior
+
+FCM delivery has already been validated on the POCO X3 NFC while:
+
+- the app was swiped from Recents
+- the screen was off
+
+Android Force Stop is intentionally different: after Force Stop, Android suppresses background/push delivery until the app is opened again.
+
+## Required end-to-end validation before merge
+
+After the Cloudflare Worker is configured:
+
+1. Samsung **Send Test** -> POCO receives it.
+2. Swipe POCO from Recents -> Send Test still arrives.
+3. Turn screen off for several minutes -> Send Test still arrives.
+4. Send a real Telegram/WhatsApp notification -> mirror arrives.
+5. Reply on POCO -> original Samsung notification action executes.
+6. Mark as read on POCO -> original Samsung action executes.
+7. Confirm no duplicate FCM subscriptions, mirrored notifications, or command executions.
+
+Only after these tests pass should the legacy Stable/Hidden WebSocket fallback code be removed and final R8/resource shrinking, APK-size, memory and battery checks be completed.
+
+## Build Android APK
+
+Android build configuration currently uses JDK 17, compileSdk 34, minSdk 28 and targetSdk 29.
 
 ```bash
 gradle --no-daemon :app:assembleDebug
 ```
 
-The APK is produced at:
+R8 and resource shrinking are enabled for debug and release builds.
+
+## Branch policy
+
+Development for the FCM architecture is on:
 
 ```text
-app/build/outputs/apk/debug/app-debug.apk
+agent/fcm-v0.8
 ```
 
-## Security note
-
-This project is intended for personal use. Do not share your Pair Code. If the code is exposed, generate a new one on both phones.
+PR #2 must remain Draft and must not be merged into `main` until Cloudflare relay testing, full device testing, and final cleanup are complete.
