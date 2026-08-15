@@ -12,8 +12,8 @@ android {
         applicationId = "com.mtpali.notification"
         minSdk = 28
         targetSdk = 29
-        versionCode = 12
-        versionName = "0.8.0-alpha2"
+        versionCode = 13
+        versionName = "0.9.0-alpha1"
     }
 
     buildTypes {
@@ -57,6 +57,7 @@ android {
 }
 
 dependencies {
+    implementation("com.squareup.okhttp3:okhttp:4.11.0")
     implementation(platform("com.google.firebase:firebase-bom:34.16.0"))
     implementation("com.google.firebase:firebase-messaging")
 }
