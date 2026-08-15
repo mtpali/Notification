@@ -12,14 +12,30 @@ android {
         applicationId = "com.mtpali.notification"
         minSdk = 28
         targetSdk = 29
-        versionCode = 14
-        versionName = "0.9.0-alpha2"
+        versionCode = 15
+        versionName = "0.9.0-alpha3"
+    }
+
+    val ciDebugKeystore = file("ci-debug.keystore")
+
+    signingConfigs {
+        if (ciDebugKeystore.exists()) {
+            create("ciDebug") {
+                storeFile = ciDebugKeystore
+                storePassword = "notification-debug"
+                keyAlias = "notificationdebug"
+                keyPassword = "notification-debug"
+            }
+        }
     }
 
     buildTypes {
         debug {
             isMinifyEnabled = true
             isShrinkResources = true
+            if (ciDebugKeystore.exists()) {
+                signingConfig = signingConfigs.getByName("ciDebug")
+            }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
