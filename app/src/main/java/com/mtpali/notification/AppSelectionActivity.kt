@@ -23,16 +23,13 @@ class AppSelectionActivity : Activity() {
         setContentView(outer)
 
         outer.addView(TextView(this).apply {
-            text = "Apps to forward"
+            text = "Apps"
             textSize = 24f
-        })
-        outer.addView(TextView(this).apply {
-            text = "Select which apps may send notifications to the paired Receiver."
-            setPadding(0, dp(4), 0, dp(10))
+            setPadding(0, 0, 0, dp(8))
         })
 
         val allApps = CheckBox(this).apply {
-            text = "Forward all apps"
+            text = "All apps"
             isChecked = Prefs.forwardAllApps(this@AppSelectionActivity)
         }
         outer.addView(allApps)
@@ -66,7 +63,8 @@ class AppSelectionActivity : Activity() {
         val selected = Prefs.selectedApps(this)
         apps.entries.sortedBy { it.value.lowercase() }.forEach { (pkg, label) ->
             val check = CheckBox(this).apply {
-                text = "$label\n$pkg"
+                text = label
+                contentDescription = "$label ($pkg)"
                 isChecked = allApps.isChecked || pkg in selected
                 isEnabled = !allApps.isChecked
                 setPadding(0, dp(4), 0, dp(4))
@@ -83,7 +81,7 @@ class AppSelectionActivity : Activity() {
         }
 
         outer.addView(Button(this).apply {
-            text = "Save app filter"
+            text = "Save"
             setOnClickListener {
                 if (allApps.isChecked) {
                     Prefs.setForwardAllApps(this@AppSelectionActivity, true)
@@ -93,7 +91,7 @@ class AppSelectionActivity : Activity() {
                     Prefs.setForwardAllApps(this@AppSelectionActivity, false)
                     Prefs.setSelectedApps(this@AppSelectionActivity, packages)
                 }
-                Toast.makeText(this@AppSelectionActivity, "App filter saved", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this@AppSelectionActivity, "Saved", Toast.LENGTH_SHORT).show()
                 finish()
             }
         })
