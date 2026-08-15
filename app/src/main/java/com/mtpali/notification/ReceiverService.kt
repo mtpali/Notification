@@ -56,11 +56,7 @@ class ReceiverService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         startForeground(SERVICE_NOTIFICATION_ID, serviceNotification("Connecting…"))
 
-        if (Prefs.mode(this) != Prefs.MODE_RECEIVER ||
-            Prefs.receiverTransport(this) != Prefs.RECEIVER_STABLE ||
-            !Prefs.receiverEnabled(this) ||
-            !CryptoBox.isValidPairCode(Prefs.pairCode(this))
-        ) {
+        if (!shouldRun()) {
             stopReceiver()
             return START_NOT_STICKY
         }
@@ -68,6 +64,8 @@ class ReceiverService : Service() {
         if (!running) {
             running = true
             startNetworkMonitoring()
+        } else {
+            applyNetworkState()
         }
         return START_STICKY
     }
@@ -76,6 +74,7 @@ class ReceiverService : Service() {
 
     override fun onDestroy() {
         running = false
+        reconnectScheduled.set(false)
         stopNetworkMonitoring()
         webSocket?.cancel()
         webSocket = null
@@ -86,6 +85,12 @@ class ReceiverService : Service() {
         }
         super.onDestroy()
     }
+
+    private fun shouldRun(): Boolean =
+        Prefs.mode(this) == Prefs.MODE_RECEIVER &&
+            Prefs.receiverTransport(this) == Prefs.RECEIVER_STABLE &&
+            Prefs.receiverEnabled(this) &&
+            CryptoBox.isValidPairCode(Prefs.pairCode(this))
 
     private fun startNetworkMonitoring() {
         if (!networkCallbackRegistered) {
@@ -112,7 +117,11 @@ class ReceiverService : Service() {
     }
 
     private fun applyNetworkState() {
-        if (!running) return
+        if (!running || !shouldRun()) {
+            if (running) stopReceiver()
+            return
+        }
+
         networkAvailable = isInternetAvailable()
         if (networkAvailable) {
             if (webSocket == null) {
@@ -138,72 +147,79 @@ class ReceiverService : Service() {
     }
 
     private fun connectWebSocket() {
-        if (!running || !networkAvailable || webSocket != null) return
+        if (!running || !networkAvailable || webSocket != null || !shouldRun()) return
 
         val pairCode = Prefs.pairCode(this)
-        if (!CryptoBox.isValidPairCode(pairCode) ||
-            Prefs.mode(this) != Prefs.MODE_RECEIVER ||
-            Prefs.receiverTransport(this) != Prefs.RECEIVER_STABLE ||
-            !Prefs.receiverEnabled(this)
-        ) {
-            stopReceiver()
-            return
-        }
-
         val lastId = Prefs.lastMessageId(this)
         val since = if (lastId.isBlank()) "10m" else lastId
-        val request = Request.Builder()
-            .url(
-                "wss://ntfy.sh/${CryptoBox.topic(pairCode)}/ws?since=" +
-                    URLEncoder.encode(since, "UTF-8")
-            )
-            .header("User-Agent", "Notification-Android/0.7")
-            .build()
 
-        webSocket = client.newWebSocket(request, object : WebSocketListener() {
-            override fun onOpen(webSocket: WebSocket, response: Response) {
-                updateServiceNotification("Connected")
-            }
+        try {
+            val request = Request.Builder()
+                .url(
+                    "wss://ntfy.sh/${CryptoBox.topic(pairCode)}/ws?since=" +
+                        URLEncoder.encode(since, "UTF-8")
+                )
+                .header("User-Agent", "Notification-Android/1.0")
+                .build()
 
-            override fun onMessage(webSocket: WebSocket, text: String) {
-                handleRelayLine(pairCode, text)
-            }
-
-            override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
-                webSocket.close(code, reason)
-            }
-
-            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                if (this@ReceiverService.webSocket === webSocket) this@ReceiverService.webSocket = null
-                networkAvailable = isInternetAvailable()
-                if (running && networkAvailable) {
-                    updateServiceNotification("Reconnecting…")
-                    scheduleReconnect()
-                } else if (running) {
-                    updateServiceNotification("Offline")
+            webSocket = client.newWebSocket(request, object : WebSocketListener() {
+                override fun onOpen(webSocket: WebSocket, response: Response) {
+                    updateServiceNotification("Connected")
                 }
-            }
 
-            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                if (this@ReceiverService.webSocket === webSocket) this@ReceiverService.webSocket = null
-                networkAvailable = isInternetAvailable()
-                if (running && networkAvailable) {
-                    updateServiceNotification("Reconnecting…")
-                    scheduleReconnect()
-                } else if (running) {
-                    updateServiceNotification("Offline")
+                override fun onMessage(webSocket: WebSocket, text: String) {
+                    handleRelayLine(pairCode, text)
                 }
-            }
-        })
+
+                override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                    webSocket.close(code, reason)
+                }
+
+                override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                    if (this@ReceiverService.webSocket === webSocket) {
+                        this@ReceiverService.webSocket = null
+                    }
+                    handleDisconnect()
+                }
+
+                override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                    if (this@ReceiverService.webSocket === webSocket) {
+                        this@ReceiverService.webSocket = null
+                    }
+                    handleDisconnect()
+                }
+            })
+        } catch (_: Exception) {
+            webSocket = null
+            if (running && shouldRun()) scheduleReconnect()
+        }
+    }
+
+    private fun handleDisconnect() {
+        if (!running || !shouldRun()) return
+        networkAvailable = isInternetAvailable()
+        if (networkAvailable) {
+            updateServiceNotification("Reconnecting…")
+            scheduleReconnect()
+        } else {
+            updateServiceNotification("Offline")
+        }
     }
 
     private fun scheduleReconnect() {
-        if (!running || !networkAvailable || !reconnectScheduled.compareAndSet(false, true)) return
-        reconnectExecutor.schedule({
+        if (!running || !shouldRun() || !networkAvailable || reconnectExecutor.isShutdown ||
+            !reconnectScheduled.compareAndSet(false, true)
+        ) return
+
+        try {
+            reconnectExecutor.schedule({
+                reconnectScheduled.set(false)
+                networkAvailable = isInternetAvailable()
+                if (running && shouldRun() && networkAvailable) connectWebSocket()
+            }, 2, TimeUnit.SECONDS)
+        } catch (_: RuntimeException) {
             reconnectScheduled.set(false)
-            networkAvailable = isInternetAvailable()
-            if (running && networkAvailable) connectWebSocket()
-        }, 2, TimeUnit.SECONDS)
+        }
     }
 
     private fun handleRelayLine(pairCode: String, line: String) {
