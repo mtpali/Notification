@@ -29,7 +29,6 @@ class MainActivity : Activity() {
     private lateinit var receiverPanel: LinearLayout
     private lateinit var advancedPanel: LinearLayout
     private lateinit var fcmSettingsPanel: LinearLayout
-    private lateinit var compatibilityInfo: TextView
     private lateinit var advancedButton: Button
     private lateinit var senderInfo: TextView
     private lateinit var receiverInfo: TextView
@@ -47,10 +46,7 @@ class MainActivity : Activity() {
         root.addView(TextView(this).apply {
             text = "Notification"
             textSize = 27f
-        })
-        root.addView(TextView(this).apply {
-            text = "Mirror notifications between two phones"
-            setPadding(0, 0, 0, dp(12))
+            setPadding(0, 0, 0, dp(10))
         })
 
         root.addView(sectionTitle("This phone"))
@@ -73,7 +69,7 @@ class MainActivity : Activity() {
         }
         root.addView(pairInput)
         root.addView(Button(this).apply {
-            text = "Generate Pair Code"
+            text = "Generate"
             setOnClickListener {
                 pairInput.setText(CryptoBox.generatePairCode())
                 pairInput.setSelection(pairInput.text.length)
@@ -100,13 +96,11 @@ class MainActivity : Activity() {
             visibility = View.GONE
             setPadding(0, dp(4), 0, dp(8))
         }
-        advancedPanel.addView(sectionTitle("Delivery method"))
+        advancedPanel.addView(sectionTitle("Delivery"))
 
         val receiverTypeGroup = RadioGroup(this).apply { orientation = RadioGroup.VERTICAL }
-        pushRadio = RadioButton(this).apply { text = "Push (FCM) • recommended / lowest battery" }
-        compatibilityRadio = RadioButton(this).apply {
-            text = "Compatibility (v0.5) • persistent WebSocket"
-        }
+        pushRadio = RadioButton(this).apply { text = "Push (FCM) • recommended" }
+        compatibilityRadio = RadioButton(this).apply { text = "Compatibility (v0.5)" }
         receiverTypeGroup.addView(pushRadio)
         receiverTypeGroup.addView(compatibilityRadio)
         advancedPanel.addView(receiverTypeGroup)
@@ -117,21 +111,16 @@ class MainActivity : Activity() {
             pushRadio.isChecked = true
         }
 
-        advancedPanel.addView(TextView(this).apply {
-            text = "Use the same delivery method on both phones."
-            setPadding(0, 0, 0, dp(6))
-        })
-
         fcmSettingsPanel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
+            setPadding(0, dp(4), 0, 0)
         }
-        fcmSettingsPanel.addView(sectionTitle("Push relay"))
 
         relayKeyStatus = TextView(this)
         fcmSettingsPanel.addView(relayKeyStatus)
 
         relayTokenInput = EditText(this).apply {
-            hint = "Private key — same on both phones"
+            hint = "Private key"
             setSingleLine(true)
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
             setText(Prefs.relayToken(this@MainActivity))
@@ -166,16 +155,9 @@ class MainActivity : Activity() {
         }
         fcmSettingsPanel.addView(relayUrlInput)
         advancedPanel.addView(fcmSettingsPanel)
-
-        compatibilityInfo = TextView(this).apply {
-            text = "Compatibility v0.5 uses the direct encrypted ntfy/WebSocket path. Relay URL and private key are not required in this mode. It uses more battery than FCM."
-            setPadding(0, dp(8), 0, dp(6))
-        }
-        advancedPanel.addView(compatibilityInfo)
         root.addView(advancedPanel)
 
         senderPanel = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        senderPanel.addView(sectionTitle("Sender"))
         senderPanel.addView(Button(this).apply {
             text = "Notification Access"
             setOnClickListener { openNotificationAccess() }
@@ -198,7 +180,7 @@ class MainActivity : Activity() {
                     !Prefs.relayConfigured(this@MainActivity)
                 ) {
                     showRelaySetup()
-                    toast("Enter the private key once")
+                    toast("Enter private key")
                     return@setOnClickListener
                 }
 
@@ -223,7 +205,6 @@ class MainActivity : Activity() {
         root.addView(senderPanel)
 
         receiverPanel = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        receiverPanel.addView(sectionTitle("Receiver"))
         receiverPanel.addView(Button(this).apply {
             text = "Start"
             setOnClickListener {
@@ -236,19 +217,13 @@ class MainActivity : Activity() {
                     !Prefs.relayConfigured(this@MainActivity)
                 ) {
                     showRelaySetup()
-                    toast("Enter the private key once")
+                    toast("Enter private key")
                     return@setOnClickListener
                 }
 
                 Prefs.setReceiverEnabled(this@MainActivity, true)
                 applyReceiverRuntime()
-                toast(
-                    if (Prefs.receiverTransport(this@MainActivity) == Prefs.RECEIVER_STABLE) {
-                        "Compatibility receiver started"
-                    } else {
-                        "Receiver started"
-                    }
-                )
+                toast(if (Prefs.receiverTransport(this@MainActivity) == Prefs.RECEIVER_STABLE) "Compatibility started" else "Receiver started")
                 updateInfo()
             }
         })
@@ -294,11 +269,11 @@ class MainActivity : Activity() {
                 MirrorNotificationListener.refresh(this)
             }
 
-            Prefs.MODE_RECEIVER -> if (Prefs.receiverEnabled(this)) {
-                if (Prefs.receiverTransport(this) == Prefs.RECEIVER_PUSH) {
-                    FcmTransport.sync(this) { runOnUiThread { updateInfo() } }
-                    FcmTransport.refreshToken(this) { runOnUiThread { updateInfo() } }
-                }
+            Prefs.MODE_RECEIVER -> if (Prefs.receiverEnabled(this) &&
+                Prefs.receiverTransport(this) == Prefs.RECEIVER_PUSH
+            ) {
+                FcmTransport.sync(this) { runOnUiThread { updateInfo() } }
+                FcmTransport.refreshToken(this) { runOnUiThread { updateInfo() } }
             }
         }
 
@@ -321,11 +296,7 @@ class MainActivity : Activity() {
         pairInput.error = null
         val oldMode = Prefs.mode(this)
         val mode = if (receiverRadio.isChecked) Prefs.MODE_RECEIVER else Prefs.MODE_SENDER
-        val transport = if (compatibilityRadio.isChecked) {
-            Prefs.RECEIVER_STABLE
-        } else {
-            Prefs.RECEIVER_PUSH
-        }
+        val transport = if (compatibilityRadio.isChecked) Prefs.RECEIVER_STABLE else Prefs.RECEIVER_PUSH
 
         if (oldMode != mode && mode == Prefs.MODE_RECEIVER) {
             Prefs.setReceiverEnabled(this, false)
@@ -336,7 +307,6 @@ class MainActivity : Activity() {
         Prefs.setRelayToken(this, relayTokenInput.text.toString())
         Prefs.setRelayUrl(this, relayUrlInput.text.toString())
         Prefs.setReceiverTransport(this, transport)
-
         editingRelayKey = false
 
         if (mode == Prefs.MODE_SENDER) {
@@ -385,25 +355,17 @@ class MainActivity : Activity() {
     }
 
     private fun updateDeliveryOptions() {
-        if (!::fcmSettingsPanel.isInitialized || !::compatibilityInfo.isInitialized) return
-        val compatibility = compatibilityRadio.isChecked
-        fcmSettingsPanel.visibility = if (compatibility) View.GONE else View.VISIBLE
-        compatibilityInfo.visibility = if (compatibility) View.VISIBLE else View.GONE
+        if (!::fcmSettingsPanel.isInitialized) return
+        fcmSettingsPanel.visibility = if (compatibilityRadio.isChecked) View.GONE else View.VISIBLE
     }
 
     private fun updateRelayKeyUi() {
         if (!::relayTokenInput.isInitialized || !::relayKeyStatus.isInitialized || !::relayKeyButton.isInitialized) return
         val saved = Prefs.relayToken(this).length >= 24
-
-        relayKeyStatus.text = if (saved) {
-            "Private key saved ✓"
-        } else {
-            "Private key is required once for FCM"
-        }
-
+        relayKeyStatus.text = if (saved) "Private key saved ✓" else "Private key"
         relayTokenInput.visibility = if (!saved || editingRelayKey) View.VISIBLE else View.GONE
         relayKeyButton.visibility = if (saved) View.VISIBLE else View.GONE
-        relayKeyButton.text = if (editingRelayKey) "Cancel key change" else "Change private key"
+        relayKeyButton.text = if (editingRelayKey) "Cancel" else "Change key"
     }
 
     private fun showRelaySetup() {
@@ -421,17 +383,13 @@ class MainActivity : Activity() {
         val access = hasNotificationAccess()
         val apps = if (Prefs.forwardAllApps(this)) "All apps" else "${Prefs.selectedApps(this).size} apps"
         val compatibility = compatibilityRadio.isChecked
-        val delivery = if (compatibility) "Compatibility v0.5" else "FCM"
-        val relaySuffix = if (!compatibility) {
-            if (Prefs.relayConfigured(this)) " • key ready" else " • key needed"
-        } else {
-            ""
-        }
+        val delivery = if (compatibility) "Compatibility" else "FCM"
+        val setup = if (!compatibility && !Prefs.relayConfigured(this)) " • setup needed" else ""
 
-        senderInfo.text = "Access ${if (access) "ON" else "OFF"} • $apps • $delivery$relaySuffix"
+        senderInfo.text = "Access ${if (access) "ON" else "OFF"} • $apps • $delivery$setup"
 
         val enabled = Prefs.mode(this) == Prefs.MODE_RECEIVER && Prefs.receiverEnabled(this)
-        receiverInfo.text = "$delivery • ${if (enabled) "ON" else "OFF"}$relaySuffix"
+        receiverInfo.text = "$delivery • ${if (enabled) "ON" else "OFF"}$setup"
     }
 
     private fun hasNotificationAccess(): Boolean =
@@ -445,7 +403,7 @@ class MainActivity : Activity() {
     private fun sectionTitle(value: String) = TextView(this).apply {
         text = value
         textSize = 18f
-        setPadding(0, dp(14), 0, dp(5))
+        setPadding(0, dp(12), 0, dp(4))
     }
 
     private fun toast(value: String) = Toast.makeText(this, value, Toast.LENGTH_SHORT).show()
