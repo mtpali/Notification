@@ -26,6 +26,8 @@ class MainActivity : Activity() {
     private lateinit var senderPanel: LinearLayout
     private lateinit var receiverPanel: LinearLayout
     private lateinit var advancedPanel: LinearLayout
+    private lateinit var fcmSettingsPanel: LinearLayout
+    private lateinit var compatibilityInfo: TextView
     private lateinit var advancedButton: Button
     private lateinit var senderInfo: TextView
     private lateinit var receiverInfo: TextView
@@ -75,18 +77,6 @@ class MainActivity : Activity() {
             }
         })
 
-        relayTokenInput = EditText(this).apply {
-            hint = "Private key — same on both phones"
-            setSingleLine(true)
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
-            setText(Prefs.relayToken(this@MainActivity))
-        }
-        root.addView(relayTokenInput)
-        root.addView(TextView(this).apply {
-            text = "The private key is saved locally. You normally enter it only once."
-            setPadding(0, 0, 0, dp(6))
-        })
-
         root.addView(Button(this).apply {
             text = "Save"
             setOnClickListener { saveSettings(true) }
@@ -108,6 +98,7 @@ class MainActivity : Activity() {
             setPadding(0, dp(4), 0, dp(8))
         }
         advancedPanel.addView(sectionTitle("Delivery method"))
+
         val receiverTypeGroup = RadioGroup(this).apply { orientation = RadioGroup.VERTICAL }
         pushRadio = RadioButton(this).apply { text = "Push (FCM) • recommended / lowest battery" }
         compatibilityRadio = RadioButton(this).apply {
@@ -124,17 +115,47 @@ class MainActivity : Activity() {
         }
 
         advancedPanel.addView(TextView(this).apply {
-            text = "Use the same delivery method on both phones. Compatibility keeps the proven v0.5 mirror path and uses more battery."
+            text = "Use the same delivery method on both phones."
             setPadding(0, 0, 0, dp(6))
         })
-        advancedPanel.addView(TextView(this).apply { text = "Relay URL" })
+
+        fcmSettingsPanel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+        fcmSettingsPanel.addView(sectionTitle("Push relay"))
+        fcmSettingsPanel.addView(TextView(this).apply {
+            text = "Private key"
+        })
+        relayTokenInput = EditText(this).apply {
+            hint = "Private key — same on both phones"
+            setSingleLine(true)
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+            setText(Prefs.relayToken(this@MainActivity))
+        }
+        fcmSettingsPanel.addView(relayTokenInput)
+        fcmSettingsPanel.addView(TextView(this).apply {
+            text = if (Prefs.relayToken(this@MainActivity).isBlank()) {
+                "Enter the private key once. It is then stored locally and stays hidden in Advanced."
+            } else {
+                "Private key is already saved locally. Change it only if the Relay key changes."
+            }
+            setPadding(0, 0, 0, dp(6))
+        })
+        fcmSettingsPanel.addView(TextView(this).apply { text = "Relay URL" })
         relayUrlInput = EditText(this).apply {
             hint = Prefs.DEFAULT_RELAY_URL
             setSingleLine(true)
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
             setText(Prefs.relayUrl(this@MainActivity))
         }
-        advancedPanel.addView(relayUrlInput)
+        fcmSettingsPanel.addView(relayUrlInput)
+        advancedPanel.addView(fcmSettingsPanel)
+
+        compatibilityInfo = TextView(this).apply {
+            text = "Compatibility v0.5 uses the direct encrypted ntfy/WebSocket path. Relay URL and private key are not required in this mode. It uses more battery than FCM."
+            setPadding(0, dp(8), 0, dp(6))
+        }
+        advancedPanel.addView(compatibilityInfo)
         root.addView(advancedPanel)
 
         senderPanel = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -160,7 +181,7 @@ class MainActivity : Activity() {
                 if (Prefs.receiverTransport(this@MainActivity) == Prefs.RECEIVER_PUSH &&
                     !Prefs.relayConfigured(this@MainActivity)
                 ) {
-                    toast("Enter the private key")
+                    toast("Open Advanced and enter the private key")
                     return@setOnClickListener
                 }
 
@@ -197,7 +218,7 @@ class MainActivity : Activity() {
                 if (Prefs.receiverTransport(this@MainActivity) == Prefs.RECEIVER_PUSH &&
                     !Prefs.relayConfigured(this@MainActivity)
                 ) {
-                    toast("Enter the private key")
+                    toast("Open Advanced and enter the private key")
                     return@setOnClickListener
                 }
 
@@ -228,7 +249,13 @@ class MainActivity : Activity() {
         root.addView(receiverPanel)
 
         modeGroup.setOnCheckedChangeListener { _, _ -> updatePanels() }
+        receiverTypeGroup.setOnCheckedChangeListener { _, _ ->
+            updateDeliveryOptions()
+            updateInfo()
+        }
+
         updatePanels()
+        updateDeliveryOptions()
         updateInfo()
 
         if (Prefs.mode(this) == Prefs.MODE_SENDER ||
@@ -258,6 +285,7 @@ class MainActivity : Activity() {
 
         if (::senderInfo.isInitialized) {
             updatePanels()
+            updateDeliveryOptions()
             updateInfo()
         }
     }
@@ -303,6 +331,7 @@ class MainActivity : Activity() {
 
         if (showToast) toast("Saved")
         updatePanels()
+        updateDeliveryOptions()
         updateInfo()
         return true
     }
@@ -332,19 +361,30 @@ class MainActivity : Activity() {
         receiverPanel.visibility = if (sender) View.GONE else View.VISIBLE
     }
 
+    private fun updateDeliveryOptions() {
+        if (!::fcmSettingsPanel.isInitialized || !::compatibilityInfo.isInitialized) return
+        val compatibility = compatibilityRadio.isChecked
+        fcmSettingsPanel.visibility = if (compatibility) View.GONE else View.VISIBLE
+        compatibilityInfo.visibility = if (compatibility) View.VISIBLE else View.GONE
+    }
+
     private fun updateInfo() {
         if (!::senderInfo.isInitialized || !::receiverInfo.isInitialized) return
 
         val access = hasNotificationAccess()
         val apps = if (Prefs.forwardAllApps(this)) "All apps" else "${Prefs.selectedApps(this).size} apps"
-        val compatibility = Prefs.receiverTransport(this) == Prefs.RECEIVER_STABLE
+        val compatibility = compatibilityRadio.isChecked
         val delivery = if (compatibility) "Compatibility v0.5" else "FCM"
-        val relay = if (Prefs.relayConfigured(this)) "key ready" else "key needed"
+        val relaySuffix = if (!compatibility) {
+            if (relayTokenInput.text.toString().trim().length >= 24) " • key ready" else " • key needed"
+        } else {
+            ""
+        }
 
-        senderInfo.text = "Access ${if (access) "ON" else "OFF"} • $apps • $delivery • $relay"
+        senderInfo.text = "Access ${if (access) "ON" else "OFF"} • $apps • $delivery$relaySuffix"
 
         val enabled = Prefs.mode(this) == Prefs.MODE_RECEIVER && Prefs.receiverEnabled(this)
-        receiverInfo.text = "$delivery • ${if (enabled) "ON" else "OFF"} • $relay"
+        receiverInfo.text = "$delivery • ${if (enabled) "ON" else "OFF"}$relaySuffix"
     }
 
     private fun hasNotificationAccess(): Boolean =
