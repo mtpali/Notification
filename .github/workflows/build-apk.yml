@@ -36,6 +36,9 @@ jobs:
         with:
           gradle-version: '8.7'
 
+      - name: Restore stable CI debug signing key
+        run: base64 --decode .github/notification-ci-debug.keystore.b64 > app/ci-debug.keystore
+
       - name: Build debug APK
         run: gradle --no-daemon :app:assembleDebug
 
