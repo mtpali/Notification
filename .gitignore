@@ -3,6 +3,7 @@
 local.properties
 build/
 app/build/
+app/ci-debug.keystore
 functions/node_modules/
 functions/*.log
 functions/.env*
