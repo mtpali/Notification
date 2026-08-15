@@ -16,6 +16,11 @@ object RelayClient {
         payload: MirrorPayload,
         onComplete: ((Boolean) -> Unit)? = null
     ) {
+        if (Prefs.receiverTransport(context) == Prefs.RECEIVER_STABLE) {
+            publishLegacyMirror(context, payload, onComplete)
+            return
+        }
+
         publishEncrypted(
             context = context,
             topic = CryptoBox.topic(Prefs.pairCode(context)),
@@ -37,6 +42,48 @@ object RelayClient {
             plaintext = payload.toJson(),
             onComplete = onComplete
         )
+    }
+
+    private fun publishLegacyMirror(
+        context: Context,
+        payload: MirrorPayload,
+        onComplete: ((Boolean) -> Unit)?
+    ) {
+        val appContext = context.applicationContext
+        val pairCode = Prefs.pairCode(appContext)
+        if (!CryptoBox.isValidPairCode(pairCode)) {
+            onComplete?.invoke(false)
+            return
+        }
+
+        executor.execute {
+            var connection: HttpURLConnection? = null
+            val ok = try {
+                val encrypted = CryptoBox.encrypt(pairCode, payload.toJson())
+                if (encrypted.length > MAX_ENCRYPTED_PAYLOAD) {
+                    false
+                } else {
+                    val topic = CryptoBox.topic(pairCode)
+                    connection = URL("https://ntfy.sh/$topic").openConnection() as HttpURLConnection
+                    connection.requestMethod = "POST"
+                    connection.connectTimeout = 10_000
+                    connection.readTimeout = 15_000
+                    connection.doOutput = true
+                    connection.setRequestProperty("Content-Type", "text/plain; charset=utf-8")
+                    connection.setRequestProperty("Firebase", "no")
+                    connection.setRequestProperty("User-Agent", "Notification-Android/0.9-compat")
+                    connection.outputStream.use {
+                        it.write(encrypted.toByteArray(StandardCharsets.UTF_8))
+                    }
+                    connection.responseCode in 200..299
+                }
+            } catch (_: Exception) {
+                false
+            } finally {
+                connection?.disconnect()
+            }
+            onComplete?.invoke(ok)
+        }
     }
 
     private fun publishEncrypted(
@@ -80,7 +127,7 @@ object RelayClient {
                     connection.doOutput = true
                     connection.setRequestProperty("Authorization", "Bearer $relayToken")
                     connection.setRequestProperty("Content-Type", "application/json; charset=utf-8")
-                    connection.setRequestProperty("User-Agent", "Notification-Android/0.8")
+                    connection.setRequestProperty("User-Agent", "Notification-Android/0.9")
                     connection.outputStream.use {
                         it.write(body.toByteArray(StandardCharsets.UTF_8))
                     }
