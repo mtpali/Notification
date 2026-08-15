@@ -23,6 +23,8 @@ class MainActivity : Activity() {
     private lateinit var pairInput: EditText
     private lateinit var relayUrlInput: EditText
     private lateinit var relayTokenInput: EditText
+    private lateinit var relayKeyStatus: TextView
+    private lateinit var relayKeyButton: Button
     private lateinit var senderPanel: LinearLayout
     private lateinit var receiverPanel: LinearLayout
     private lateinit var advancedPanel: LinearLayout
@@ -31,6 +33,7 @@ class MainActivity : Activity() {
     private lateinit var advancedButton: Button
     private lateinit var senderInfo: TextView
     private lateinit var receiverInfo: TextView
+    private var editingRelayKey = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -123,9 +126,10 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
         }
         fcmSettingsPanel.addView(sectionTitle("Push relay"))
-        fcmSettingsPanel.addView(TextView(this).apply {
-            text = "Private key"
-        })
+
+        relayKeyStatus = TextView(this)
+        fcmSettingsPanel.addView(relayKeyStatus)
+
         relayTokenInput = EditText(this).apply {
             hint = "Private key — same on both phones"
             setSingleLine(true)
@@ -133,15 +137,27 @@ class MainActivity : Activity() {
             setText(Prefs.relayToken(this@MainActivity))
         }
         fcmSettingsPanel.addView(relayTokenInput)
-        fcmSettingsPanel.addView(TextView(this).apply {
-            text = if (Prefs.relayToken(this@MainActivity).isBlank()) {
-                "Enter the private key once. It is then stored locally and stays hidden in Advanced."
-            } else {
-                "Private key is already saved locally. Change it only if the Relay key changes."
+
+        relayKeyButton = Button(this).apply {
+            setOnClickListener {
+                if (editingRelayKey) {
+                    relayTokenInput.setText(Prefs.relayToken(this@MainActivity))
+                    editingRelayKey = false
+                } else {
+                    editingRelayKey = true
+                    relayTokenInput.visibility = View.VISIBLE
+                    relayTokenInput.requestFocus()
+                    relayTokenInput.selectAll()
+                }
+                updateRelayKeyUi()
             }
-            setPadding(0, 0, 0, dp(6))
+        }
+        fcmSettingsPanel.addView(relayKeyButton)
+
+        fcmSettingsPanel.addView(TextView(this).apply {
+            text = "Relay URL"
+            setPadding(0, dp(6), 0, 0)
         })
-        fcmSettingsPanel.addView(TextView(this).apply { text = "Relay URL" })
         relayUrlInput = EditText(this).apply {
             hint = Prefs.DEFAULT_RELAY_URL
             setSingleLine(true)
@@ -181,7 +197,8 @@ class MainActivity : Activity() {
                 if (Prefs.receiverTransport(this@MainActivity) == Prefs.RECEIVER_PUSH &&
                     !Prefs.relayConfigured(this@MainActivity)
                 ) {
-                    toast("Open Advanced and enter the private key")
+                    showRelaySetup()
+                    toast("Enter the private key once")
                     return@setOnClickListener
                 }
 
@@ -218,7 +235,8 @@ class MainActivity : Activity() {
                 if (Prefs.receiverTransport(this@MainActivity) == Prefs.RECEIVER_PUSH &&
                     !Prefs.relayConfigured(this@MainActivity)
                 ) {
-                    toast("Open Advanced and enter the private key")
+                    showRelaySetup()
+                    toast("Enter the private key once")
                     return@setOnClickListener
                 }
 
@@ -256,6 +274,7 @@ class MainActivity : Activity() {
 
         updatePanels()
         updateDeliveryOptions()
+        updateRelayKeyUi()
         updateInfo()
 
         if (Prefs.mode(this) == Prefs.MODE_SENDER ||
@@ -286,6 +305,7 @@ class MainActivity : Activity() {
         if (::senderInfo.isInitialized) {
             updatePanels()
             updateDeliveryOptions()
+            updateRelayKeyUi()
             updateInfo()
         }
     }
@@ -317,6 +337,8 @@ class MainActivity : Activity() {
         Prefs.setRelayUrl(this, relayUrlInput.text.toString())
         Prefs.setReceiverTransport(this, transport)
 
+        editingRelayKey = false
+
         if (mode == Prefs.MODE_SENDER) {
             Prefs.setReceiverEnabled(this, false)
             stopService(Intent(this, ReceiverService::class.java))
@@ -332,6 +354,7 @@ class MainActivity : Activity() {
         if (showToast) toast("Saved")
         updatePanels()
         updateDeliveryOptions()
+        updateRelayKeyUi()
         updateInfo()
         return true
     }
@@ -368,6 +391,30 @@ class MainActivity : Activity() {
         compatibilityInfo.visibility = if (compatibility) View.VISIBLE else View.GONE
     }
 
+    private fun updateRelayKeyUi() {
+        if (!::relayTokenInput.isInitialized || !::relayKeyStatus.isInitialized || !::relayKeyButton.isInitialized) return
+        val saved = Prefs.relayToken(this).length >= 24
+
+        relayKeyStatus.text = if (saved) {
+            "Private key saved ✓"
+        } else {
+            "Private key is required once for FCM"
+        }
+
+        relayTokenInput.visibility = if (!saved || editingRelayKey) View.VISIBLE else View.GONE
+        relayKeyButton.visibility = if (saved) View.VISIBLE else View.GONE
+        relayKeyButton.text = if (editingRelayKey) "Cancel key change" else "Change private key"
+    }
+
+    private fun showRelaySetup() {
+        advancedPanel.visibility = View.VISIBLE
+        advancedButton.text = "Hide Advanced"
+        editingRelayKey = true
+        updateDeliveryOptions()
+        updateRelayKeyUi()
+        relayTokenInput.requestFocus()
+    }
+
     private fun updateInfo() {
         if (!::senderInfo.isInitialized || !::receiverInfo.isInitialized) return
 
@@ -376,7 +423,7 @@ class MainActivity : Activity() {
         val compatibility = compatibilityRadio.isChecked
         val delivery = if (compatibility) "Compatibility v0.5" else "FCM"
         val relaySuffix = if (!compatibility) {
-            if (relayTokenInput.text.toString().trim().length >= 24) " • key ready" else " • key needed"
+            if (Prefs.relayConfigured(this)) " • key ready" else " • key needed"
         } else {
             ""
         }
