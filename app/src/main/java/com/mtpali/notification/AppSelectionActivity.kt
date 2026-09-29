@@ -53,14 +53,20 @@ class AppSelectionActivity : Activity() {
         )
 
         val launcherIntent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
-        val resolveInfos = packageManager.queryIntentActivities(launcherIntent, 0)
         val apps = linkedMapOf<String, String>()
-
-        resolveInfos.forEach { info ->
-            val pkg = info.activityInfo?.packageName ?: return@forEach
-            if (pkg == packageName) return@forEach
-            val label = info.loadLabel(packageManager)?.toString()?.ifBlank { pkg } ?: pkg
-            apps[pkg] = label
+        try {
+            val resolveInfos = packageManager.queryIntentActivities(launcherIntent, 0)
+            resolveInfos.forEach { info ->
+                val pkg = info.activityInfo?.packageName ?: return@forEach
+                if (pkg == packageName) return@forEach
+                val label = try {
+                    info.loadLabel(packageManager)?.toString()?.ifBlank { pkg } ?: pkg
+                } catch (_: Exception) {
+                    pkg
+                }
+                apps[pkg] = label
+            }
+        } catch (_: Exception) {
         }
 
         val selected = Prefs.selectedApps(this)

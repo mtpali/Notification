@@ -255,7 +255,7 @@ class MirrorNotificationListener : NotificationListenerService() {
                     (command.packageName.isBlank() || it.packageName == command.packageName)
             } ?: return
 
-            val actions = sbn.notification.actions ?: return
+            val actions = sbn.notification?.actions ?: return
             when (command.type) {
                 CommandPayload.TYPE_REPLY -> {
                     if (command.text.isBlank()) return
@@ -265,7 +265,9 @@ class MirrorNotificationListener : NotificationListenerService() {
                     val results = Bundle()
                     remoteInputs.forEach { results.putCharSequence(it.resultKey, command.text) }
                     RemoteInput.addResultsToIntent(remoteInputs, fillInIntent, results)
-                    RemoteInput.setResultsSource(fillInIntent, RemoteInput.SOURCE_FREE_FORM_INPUT)
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+                        RemoteInput.setResultsSource(fillInIntent, RemoteInput.SOURCE_FREE_FORM_INPUT)
+                    }
                     action.actionIntent.send(this, 0, fillInIntent)
                 }
 

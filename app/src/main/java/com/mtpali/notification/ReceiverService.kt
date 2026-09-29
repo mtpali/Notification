@@ -8,6 +8,9 @@ import android.app.RemoteInput
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
+import android.graphics.drawable.Icon
+import android.os.Build
 import android.os.IBinder
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -38,7 +41,28 @@ class ReceiverService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        startForeground(SERVICE_NOTIFICATION_ID, serviceNotification("Connecting…"))
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                startForeground(
+                    SERVICE_NOTIFICATION_ID,
+                    serviceNotification("Connecting…"),
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC or ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING
+                )
+            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(
+                    SERVICE_NOTIFICATION_ID,
+                    serviceNotification("Connecting…"),
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+                )
+            } else {
+                startForeground(SERVICE_NOTIFICATION_ID, serviceNotification("Connecting…"))
+            }
+        } catch (_: Exception) {
+            try {
+                startForeground(SERVICE_NOTIFICATION_ID, serviceNotification("Connecting…"))
+            } catch (_: Exception) {
+            }
+        }
 
         if (Prefs.mode(this) != Prefs.MODE_RECEIVER ||
             !CryptoBox.isValidPairCode(Prefs.pairCode(this))
@@ -175,23 +199,42 @@ class ReceiverService : Service() {
             builder.addAction(markReadAction(payload, localId))
         }
 
-        (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
-            .notify(localId, builder.build())
+        try {
+            (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
+                .notify(localId, builder.build())
+        } catch (_: Exception) {
+        }
     }
 
     private fun replyAction(payload: MirrorPayload, localId: Int): Notification.Action {
         val intent = commandIntent(ActionCommandReceiver.ACTION_REPLY, payload, localId)
+        val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
+        } else {
+            PendingIntent.FLAG_UPDATE_CURRENT
+        }
         val pendingIntent = PendingIntent.getBroadcast(
             this,
             (payload.notificationKey + ":reply").hashCode(),
             intent,
-            PendingIntent.FLAG_UPDATE_CURRENT
+            flags
         )
         val remoteInput = RemoteInput.Builder(ActionCommandReceiver.KEY_REPLY_TEXT)
             .setLabel("Reply")
             .build()
 
-        return Notification.Action.Builder(R.drawable.ic_notification, "Reply", pendingIntent)
+        val actionIcon = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            Icon.createWithResource(this, R.drawable.ic_notification)
+        } else null
+
+        val actionBuilder = if (actionIcon != null) {
+            Notification.Action.Builder(actionIcon, "Reply", pendingIntent)
+        } else {
+            @Suppress("DEPRECATION")
+            Notification.Action.Builder(R.drawable.ic_notification, "Reply", pendingIntent)
+        }
+
+        return actionBuilder
             .addRemoteInput(remoteInput)
             .setAllowGeneratedReplies(true)
             .setSemanticAction(Notification.Action.SEMANTIC_ACTION_REPLY)
@@ -200,13 +243,29 @@ class ReceiverService : Service() {
 
     private fun markReadAction(payload: MirrorPayload, localId: Int): Notification.Action {
         val intent = commandIntent(ActionCommandReceiver.ACTION_MARK_READ, payload, localId)
+        val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        } else {
+            PendingIntent.FLAG_UPDATE_CURRENT
+        }
         val pendingIntent = PendingIntent.getBroadcast(
             this,
             (payload.notificationKey + ":read").hashCode(),
             intent,
-            PendingIntent.FLAG_UPDATE_CURRENT
+            flags
         )
-        return Notification.Action.Builder(R.drawable.ic_notification, "Mark as read", pendingIntent)
+        val actionIcon = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            Icon.createWithResource(this, R.drawable.ic_notification)
+        } else null
+
+        val actionBuilder = if (actionIcon != null) {
+            Notification.Action.Builder(actionIcon, "Mark as read", pendingIntent)
+        } else {
+            @Suppress("DEPRECATION")
+            Notification.Action.Builder(R.drawable.ic_notification, "Mark as read", pendingIntent)
+        }
+
+        return actionBuilder
             .setSemanticAction(Notification.Action.SEMANTIC_ACTION_MARK_AS_READ)
             .build()
     }
@@ -240,15 +299,26 @@ class ReceiverService : Service() {
             .build()
 
     private fun updateServiceNotification(status: String) {
-        (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
-            .notify(SERVICE_NOTIFICATION_ID, serviceNotification(status))
+        try {
+            (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
+                .notify(SERVICE_NOTIFICATION_ID, serviceNotification(status))
+        } catch (_: Exception) {
+        }
     }
 
     private fun stopReceiver() {
         running = false
         webSocket?.close(1000, "stop")
         webSocket = null
-        stopForeground(true)
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                stopForeground(STOP_FOREGROUND_REMOVE)
+            } else {
+                @Suppress("DEPRECATION")
+                stopForeground(true)
+            }
+        } catch (_: Exception) {
+        }
         stopSelf()
     }
 

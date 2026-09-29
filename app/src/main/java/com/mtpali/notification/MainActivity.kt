@@ -2,6 +2,8 @@ package com.mtpali.notification
 
 import android.app.Activity
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.text.InputType
@@ -68,12 +70,22 @@ class MainActivity : Activity() {
         root.addView(sectionTitle("Sender"))
         root.addView(Button(this).apply {
             text = "Notification Access"
-            setOnClickListener { startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) }
+            setOnClickListener {
+                try {
+                    startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+                } catch (_: Exception) {
+                    toast("Cannot open notification settings")
+                }
+            }
         })
         root.addView(Button(this).apply {
             text = "Apps"
             setOnClickListener {
-                startActivity(Intent(this@MainActivity, AppSelectionActivity::class.java))
+                try {
+                    startActivity(Intent(this@MainActivity, AppSelectionActivity::class.java))
+                } catch (_: Exception) {
+                    toast("Cannot open app list")
+                }
             }
         })
         root.addView(Button(this).apply {
@@ -111,19 +123,40 @@ class MainActivity : Activity() {
                     toast("Select Receiver")
                     return@setOnClickListener
                 }
-                startForegroundService(Intent(this@MainActivity, ReceiverService::class.java))
-                toast("Started")
+                checkNotificationPermission()
+                try {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        startForegroundService(Intent(this@MainActivity, ReceiverService::class.java))
+                    } else {
+                        startService(Intent(this@MainActivity, ReceiverService::class.java))
+                    }
+                    toast("Started")
+                } catch (e: Exception) {
+                    toast("Could not start: ${e.message}")
+                }
             }
         })
         root.addView(Button(this).apply {
             text = "Stop"
             setOnClickListener {
-                stopService(Intent(this@MainActivity, ReceiverService::class.java))
-                toast("Stopped")
+                try {
+                    stopService(Intent(this@MainActivity, ReceiverService::class.java))
+                    toast("Stopped")
+                } catch (_: Exception) {
+                }
             }
         })
 
         updateInfo()
+        checkNotificationPermission()
+    }
+
+    private fun checkNotificationPermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 1001)
+            }
+        }
     }
 
     override fun onResume() {

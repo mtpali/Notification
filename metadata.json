@@ -1,0 +1,6 @@
+{
+  "name": "Notification",
+  "description": "Cross-device notification relay and mirroring client",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
