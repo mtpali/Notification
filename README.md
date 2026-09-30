@@ -104,12 +104,14 @@ WorkManager. There is no periodic polling in Push mode. R8 and resource shrinkin
 JDK 17, Gradle 8.7, Android SDK 34:
 
 ```bash
-gradle --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
+gradle --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleRelease
 node --test relay/test/relay.test.js
 ```
 
 GitHub Actions restores the stable CI debug signature, tests Android sync/crypto rules and Worker
-behavior, runs Android lint, builds the shrunk APK and uploads it as `Notification-debug-apk`.
+behavior, runs Android lint, builds the signed release APK with R8 obfuscation/resource shrinking,
+and uploads it as `Notification-1.1.0-optimized-apk`. CI verifies that the obfuscation mapping exists
+and reports the APK byte size and SHA-256.
 The extra JUnit/JSON dependencies are test-only and are not included in the APK.
 
 Before merging, test on both real phones in both delivery modes:

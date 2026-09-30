@@ -44,6 +44,9 @@ android {
         release {
             isMinifyEnabled = true
             isShrinkResources = true
+            if (ciDebugKeystore.exists()) {
+                signingConfig = signingConfigs.getByName("ciDebug")
+            }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"

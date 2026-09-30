@@ -61,6 +61,7 @@ class SyncLedger(raw: String = "") {
                     MirrorPayload.EVENT_SNAPSHOT_START -> it.start = true
                     MirrorPayload.EVENT_SNAPSHOT_END -> it.endTime = payload.eventTime
                     MirrorPayload.EVENT_UPSERT -> it.seen.add(key)
+                    else -> Unit
                 }
             }
         }
