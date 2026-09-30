@@ -1,10 +1,11 @@
 package com.mtpali.notification
 
-import android.util.Base64
+import java.util.Base64
 import org.json.JSONObject
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.security.SecureRandom
+import java.util.UUID
 import javax.crypto.Cipher
 import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.SecretKeySpec
@@ -17,10 +18,16 @@ data class MirrorPayload(
     val postTime: Long,
     val notificationKey: String,
     val canReply: Boolean = false,
-    val canMarkRead: Boolean = false
+    val canMarkRead: Boolean = false,
+    val event: String = EVENT_UPSERT,
+    val eventTime: Long = System.currentTimeMillis(),
+    val eventId: String = UUID.randomUUID().toString(),
+    val snapshotId: String = "",
+    val snapshotTime: Long = 0,
+    val snapshotCount: Int = 0
 ) {
     fun toJson(): String = JSONObject().apply {
-        put("v", 2)
+        put("v", 3)
         put("package", packageName)
         put("app", appName)
         put("title", title)
@@ -29,9 +36,23 @@ data class MirrorPayload(
         put("key", notificationKey)
         put("reply", canReply)
         put("read", canMarkRead)
+        put("event", event)
+        put("time", eventTime)
+        put("id", eventId)
+        if (snapshotId.isNotBlank()) {
+            put("snapshot", snapshotId)
+            put("snapshotTime", snapshotTime)
+            put("snapshotCount", snapshotCount)
+        }
     }.toString()
 
+    fun toTransportJson(): String = PayloadBudget.fit(toJson())
+
     companion object {
+        const val EVENT_UPSERT = "upsert"
+        const val EVENT_REMOVE = "remove"
+        const val EVENT_SNAPSHOT_START = "snapshot_start"
+        const val EVENT_SNAPSHOT_END = "snapshot_end"
         fun fromJson(raw: String): MirrorPayload {
             val json = JSONObject(raw)
             return MirrorPayload(
@@ -42,7 +63,13 @@ data class MirrorPayload(
                 postTime = json.optLong("postTime"),
                 notificationKey = json.optString("key"),
                 canReply = json.optBoolean("reply"),
-                canMarkRead = json.optBoolean("read")
+                canMarkRead = json.optBoolean("read"),
+                event = json.optString("event", EVENT_UPSERT),
+                eventTime = json.optLong("time", json.optLong("postTime")),
+                eventId = json.optString("id"),
+                snapshotId = json.optString("snapshot"),
+                snapshotTime = json.optLong("snapshotTime"),
+                snapshotCount = json.optInt("snapshotCount")
             )
         }
     }
@@ -53,20 +80,32 @@ data class CommandPayload(
     val packageName: String,
     val notificationKey: String,
     val text: String = "",
-    val createdAt: Long = System.currentTimeMillis()
+    val createdAt: Long = System.currentTimeMillis(),
+    val id: String = UUID.randomUUID().toString(),
+    val sourcePostTime: Long = 0
 ) {
     fun toJson(): String = JSONObject().apply {
-        put("v", 1)
+        put("v", 2)
         put("type", type)
         put("package", packageName)
         put("key", notificationKey)
         put("text", text)
         put("time", createdAt)
+        put("id", id)
+        put("postTime", sourcePostTime)
     }.toString()
+
+    fun toTransportJson(): String = PayloadBudget.fit(toJson())
+
+    fun isFresh(now: Long = System.currentTimeMillis()): Boolean =
+        createdAt > 0 && createdAt <= now + 60_000 && now - createdAt <= MAX_AGE_MS
 
     companion object {
         const val TYPE_REPLY = "reply"
         const val TYPE_MARK_READ = "read"
+        const val TYPE_DISMISS = "dismiss"
+        const val TYPE_SYNC = "sync"
+        const val MAX_AGE_MS = 10 * 60_000L
 
         fun fromJson(raw: String): CommandPayload {
             val json = JSONObject(raw)
@@ -75,7 +114,9 @@ data class CommandPayload(
                 packageName = json.optString("package"),
                 notificationKey = json.optString("key"),
                 text = json.optString("text"),
-                createdAt = json.optLong("time")
+                createdAt = json.optLong("time"),
+                id = json.optString("id"),
+                sourcePostTime = json.optLong("postTime")
             )
         }
     }
@@ -84,11 +125,11 @@ data class CommandPayload(
 object CryptoBox {
     private val random = SecureRandom()
 
-    fun generatePairCode(): String =
-        (100000 + random.nextInt(900000)).toString()
+    fun generatePairCode(): String = (100_000 + random.nextInt(900_000)).toString()
 
     fun isValidPairCode(pairCode: String): Boolean =
-        pairCode.length == 6 && pairCode.all { it.isDigit() }
+        (pairCode.length == 6 && pairCode.all { it.isDigit() }) ||
+            pairCode.matches(Regex("[a-f0-9]{32}"))
 
     fun topic(pairCode: String): String =
         topicFrom("notification-topic-v1:$pairCode", "notification-")
@@ -128,8 +169,8 @@ object CryptoBox {
             .digest(value.toByteArray(StandardCharsets.UTF_8))
 
     private fun encode(bytes: ByteArray): String =
-        Base64.encodeToString(bytes, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
+        Base64.getUrlEncoder().withoutPadding().encodeToString(bytes)
 
     private fun decode(value: String): ByteArray =
-        Base64.decode(value, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
+        Base64.getUrlDecoder().decode(value)
 }

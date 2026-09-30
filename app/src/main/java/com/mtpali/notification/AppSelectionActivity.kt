@@ -23,16 +23,13 @@ class AppSelectionActivity : Activity() {
         setContentView(outer)
 
         outer.addView(TextView(this).apply {
-            text = "Apps to forward"
+            text = "Apps"
             textSize = 24f
-        })
-        outer.addView(TextView(this).apply {
-            text = "Select which apps may send notifications to the paired Receiver."
-            setPadding(0, dp(4), 0, dp(10))
+            setPadding(0, 0, 0, dp(8))
         })
 
         val allApps = CheckBox(this).apply {
-            text = "Forward all apps"
+            text = "All apps"
             isChecked = Prefs.forwardAllApps(this@AppSelectionActivity)
         }
         outer.addView(allApps)
@@ -53,26 +50,21 @@ class AppSelectionActivity : Activity() {
         )
 
         val launcherIntent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+        val resolveInfos = packageManager.queryIntentActivities(launcherIntent, 0)
         val apps = linkedMapOf<String, String>()
-        try {
-            val resolveInfos = packageManager.queryIntentActivities(launcherIntent, 0)
-            resolveInfos.forEach { info ->
-                val pkg = info.activityInfo?.packageName ?: return@forEach
-                if (pkg == packageName) return@forEach
-                val label = try {
-                    info.loadLabel(packageManager)?.toString()?.ifBlank { pkg } ?: pkg
-                } catch (_: Exception) {
-                    pkg
-                }
-                apps[pkg] = label
-            }
-        } catch (_: Exception) {
+
+        resolveInfos.forEach { info ->
+            val pkg = info.activityInfo?.packageName ?: return@forEach
+            if (pkg == packageName) return@forEach
+            val label = info.loadLabel(packageManager)?.toString()?.ifBlank { pkg } ?: pkg
+            apps[pkg] = label
         }
 
         val selected = Prefs.selectedApps(this)
         apps.entries.sortedBy { it.value.lowercase() }.forEach { (pkg, label) ->
             val check = CheckBox(this).apply {
-                text = "$label\n$pkg"
+                text = label
+                contentDescription = "$label ($pkg)"
                 isChecked = allApps.isChecked || pkg in selected
                 isEnabled = !allApps.isChecked
                 setPadding(0, dp(4), 0, dp(4))
@@ -82,14 +74,14 @@ class AppSelectionActivity : Activity() {
         }
 
         allApps.setOnCheckedChangeListener { _, checked ->
-            appChecks.values.forEach { check ->
+            appChecks.forEach { (pkg, check) ->
                 check.isEnabled = !checked
-                if (checked) check.isChecked = true
+                check.isChecked = if (checked) true else pkg in selected
             }
         }
 
         outer.addView(Button(this).apply {
-            text = "Save app filter"
+            text = "Save"
             setOnClickListener {
                 if (allApps.isChecked) {
                     Prefs.setForwardAllApps(this@AppSelectionActivity, true)
@@ -99,7 +91,8 @@ class AppSelectionActivity : Activity() {
                     Prefs.setForwardAllApps(this@AppSelectionActivity, false)
                     Prefs.setSelectedApps(this@AppSelectionActivity, packages)
                 }
-                Toast.makeText(this@AppSelectionActivity, "App filter saved", Toast.LENGTH_SHORT).show()
+                MirrorNotificationListener.requestSnapshot(this@AppSelectionActivity)
+                Toast.makeText(this@AppSelectionActivity, "Saved", Toast.LENGTH_SHORT).show()
                 finish()
             }
         })

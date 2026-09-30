@@ -3,15 +3,17 @@ package com.mtpali.notification
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
-import android.app.PendingIntent
-import android.app.RemoteInput
 import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
-import android.graphics.drawable.Icon
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -19,62 +21,70 @@ import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import org.json.JSONObject
 import java.net.URLEncoder
-import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.random.Random
 
+/** One ntfy socket on either phone; Sender listens for actions, Receiver for mirrors. */
 class ReceiverService : Service() {
+    private val handler = Handler(Looper.getMainLooper())
     private lateinit var client: OkHttpClient
-    private val reconnectExecutor = Executors.newSingleThreadScheduledExecutor()
-    private val reconnectScheduled = AtomicBoolean(false)
+    private lateinit var connectivity: ConnectivityManager
+    private var running = false
+    private var registered = false
+    private var socket: WebSocket? = null
+    private var session = ""
+    private var failures = 0
+    private var reconnectPending = false
+    private var lastSync = 0L
 
-    @Volatile private var running = false
-    @Volatile private var webSocket: WebSocket? = null
+    private val reconnect = Runnable {
+        reconnectPending = false
+        applyNetwork()
+    }
+    private val networkCallback = object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: Network) { handler.post { applyNetwork(true) } }
+        override fun onLost(network: Network) { handler.post { applyNetwork() } }
+        override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) {
+            handler.post { applyNetwork() }
+        }
+    }
 
     override fun onCreate() {
         super.onCreate()
-        createChannels()
-        client = OkHttpClient.Builder()
-            .pingInterval(25, TimeUnit.SECONDS)
-            .retryOnConnectionFailure(true)
-            .build()
+        manager().createNotificationChannel(NotificationChannel(CHANNEL, "Compatibility", NotificationManager.IMPORTANCE_LOW)
+            .apply { setShowBadge(false) })
+        connectivity = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        client = OkHttpClient.Builder().pingInterval(60, TimeUnit.SECONDS).build()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                startForeground(
-                    SERVICE_NOTIFICATION_ID,
-                    serviceNotification("Connecting…"),
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC or ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING
-                )
-            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                startForeground(
-                    SERVICE_NOTIFICATION_ID,
-                    serviceNotification("Connecting…"),
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
-                )
-            } else {
-                startForeground(SERVICE_NOTIFICATION_ID, serviceNotification("Connecting…"))
-            }
-        } catch (_: Exception) {
-            try {
-                startForeground(SERVICE_NOTIFICATION_ID, serviceNotification("Connecting…"))
-            } catch (_: Exception) {
-            }
+            if (Build.VERSION.SDK_INT >= 34) {
+                startForeground(SERVICE_ID, notification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING)
+            } else startForeground(SERVICE_ID, notification())
+        } catch (_: RuntimeException) {
+            Diagnostics.error(this, "Compatibility service could not start")
+            stopSelf()
+            return START_NOT_STICKY
         }
-
-        if (Prefs.mode(this) != Prefs.MODE_RECEIVER ||
-            !CryptoBox.isValidPairCode(Prefs.pairCode(this))
-        ) {
+        if (!shouldRun()) {
             stopReceiver()
             return START_NOT_STICKY
         }
-
-        if (!running) {
-            running = true
-            connectWebSocket()
+        running = true
+        val newSession = Prefs.mode(this) + ":" + Prefs.pairCode(this)
+        if (session != newSession) {
+            disconnect()
+            session = newSession
+            failures = 0
         }
+        if (!registered) {
+            try {
+                connectivity.registerDefaultNetworkCallback(networkCallback)
+                registered = true
+            } catch (_: RuntimeException) { Diagnostics.error(this, "Network monitoring unavailable") }
+        }
+        applyNetwork()
         return START_STICKY
     }
 
@@ -82,9 +92,9 @@ class ReceiverService : Service() {
 
     override fun onDestroy() {
         running = false
-        webSocket?.cancel()
-        webSocket = null
-        reconnectExecutor.shutdownNow()
+        handler.removeCallbacksAndMessages(null)
+        disconnect()
+        if (registered) runCatching { connectivity.unregisterNetworkCallback(networkCallback) }
         if (::client.isInitialized) {
             client.dispatcher.executorService.shutdown()
             client.connectionPool.evictAll()
@@ -92,239 +102,136 @@ class ReceiverService : Service() {
         super.onDestroy()
     }
 
-    private fun connectWebSocket() {
-        if (!running || webSocket != null) return
+    private fun shouldRun(): Boolean = Prefs.receiverTransport(this) == Prefs.RECEIVER_STABLE &&
+        CryptoBox.isValidPairCode(Prefs.pairCode(this)) &&
+        (Prefs.mode(this) == Prefs.MODE_SENDER || Prefs.receiverEnabled(this))
 
+    private fun online(): Boolean {
+        return runCatching {
+        val network = connectivity.activeNetwork ?: return false
+        val caps = connectivity.getNetworkCapabilities(network) ?: return false
+        caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+        }.getOrDefault(false)
+    }
+
+    private fun applyNetwork(resetBackoff: Boolean = false) {
+        if (!running) return
+        if (!shouldRun()) { stopReceiver(); return }
+        if (!online()) {
+            disconnect()
+            updateStatus("Offline")
+        } else if (resetBackoff) {
+            failures = 0
+            handler.removeCallbacks(reconnect)
+            reconnectPending = false
+            if (socket == null) connect()
+        } else if (socket == null && !reconnectPending) connect()
+    }
+
+    private fun connect() {
+        if (!running || !shouldRun() || socket != null || !online()) return
         val pairCode = Prefs.pairCode(this)
-        if (!CryptoBox.isValidPairCode(pairCode) || Prefs.mode(this) != Prefs.MODE_RECEIVER) {
-            stopReceiver()
-            return
+        val commandMode = Prefs.mode(this) == Prefs.MODE_SENDER
+        val activeSession = session
+        val topic = if (commandMode) CryptoBox.commandTopic(pairCode) else CryptoBox.topic(pairCode)
+        val cursor = if (commandMode) Prefs.lastCommandId(this) else Prefs.lastMessageId(this)
+        val since = cursor.ifBlank { "10m" }
+        updateStatus("Connecting…")
+        try {
+            val request = Request.Builder().url("wss://ntfy.sh/$topic/ws?since=" + URLEncoder.encode(since, "UTF-8"))
+                .header("User-Agent", "Notification-Android/1.1").build()
+            socket = client.newWebSocket(request, object : WebSocketListener() {
+                override fun onOpen(webSocket: WebSocket, response: Response) {
+                    handler.post {
+                        if (socket !== webSocket || !running || session != activeSession) return@post
+                        failures = 0
+                        updateStatus("Connected")
+                        if (!commandMode && System.currentTimeMillis() - lastSync > 30_000) {
+                            lastSync = System.currentTimeMillis()
+                            RelayClient.requestSync(applicationContext)
+                        }
+                    }
+                }
+                override fun onMessage(webSocket: WebSocket, text: String) {
+                    handler.post {
+                        if (socket === webSocket && running && session == activeSession && shouldRun())
+                            receive(pairCode, commandMode, text)
+                    }
+                }
+                override fun onClosing(webSocket: WebSocket, code: Int, reason: String) { webSocket.close(code, reason) }
+                override fun onClosed(webSocket: WebSocket, code: Int, reason: String) { failed(webSocket, activeSession, false) }
+                override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                    failed(webSocket, activeSession, response?.code == 400 && cursor.isNotBlank())
+                }
+            })
+        } catch (_: RuntimeException) { scheduleReconnect() }
+    }
+
+    private fun failed(webSocket: WebSocket, activeSession: String, resetCursor: Boolean) {
+        handler.post {
+            if (!running || socket !== webSocket || session != activeSession) return@post
+            socket = null
+            if (resetCursor) {
+                if (Prefs.mode(this) == Prefs.MODE_SENDER) Prefs.setLastCommandId(this, "")
+                else Prefs.setLastMessageId(this, "")
+            }
+            scheduleReconnect()
         }
-
-        val lastId = Prefs.lastMessageId(this)
-        val since = if (lastId.isBlank()) "10m" else lastId
-        val request = Request.Builder()
-            .url(
-                "wss://ntfy.sh/${CryptoBox.topic(pairCode)}/ws?since=" +
-                    URLEncoder.encode(since, "UTF-8")
-            )
-            .header("User-Agent", "Notification-Android/0.6")
-            .build()
-
-        webSocket = client.newWebSocket(request, object : WebSocketListener() {
-            override fun onOpen(webSocket: WebSocket, response: Response) {
-                updateServiceNotification("Connected")
-            }
-
-            override fun onMessage(webSocket: WebSocket, text: String) {
-                handleRelayLine(pairCode, text)
-            }
-
-            override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
-                webSocket.close(code, reason)
-            }
-
-            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                if (this@ReceiverService.webSocket === webSocket) this@ReceiverService.webSocket = null
-                if (running) {
-                    updateServiceNotification("Reconnecting…")
-                    scheduleReconnect()
-                }
-            }
-
-            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                if (this@ReceiverService.webSocket === webSocket) this@ReceiverService.webSocket = null
-                if (running) {
-                    updateServiceNotification("Reconnecting…")
-                    scheduleReconnect()
-                }
-            }
-        })
     }
 
     private fun scheduleReconnect() {
-        if (!running || !reconnectScheduled.compareAndSet(false, true)) return
-        reconnectExecutor.schedule({
-            reconnectScheduled.set(false)
-            if (running) connectWebSocket()
-        }, 2, TimeUnit.SECONDS)
+        if (!running || !shouldRun() || reconnectPending) return
+        if (!online()) { updateStatus("Offline"); return }
+        reconnectPending = true
+        val delay = (2_000L * (1L shl failures.coerceAtMost(5))).coerceAtMost(60_000) + Random.nextLong(1_000)
+        failures++
+        updateStatus("Reconnecting…")
+        handler.postDelayed(reconnect, delay)
     }
 
-    private fun handleRelayLine(pairCode: String, line: String) {
-        if (line.isBlank()) return
-        try {
+    private fun receive(pairCode: String, commandMode: Boolean, line: String) {
+        runCatching {
             val envelope = JSONObject(line)
             if (envelope.optString("event") != "message") return
-
             val id = envelope.optString("id")
-            if (id.isNotBlank() && id == Prefs.lastMessageId(this)) return
-
-            val encrypted = envelope.optString("message")
-            if (encrypted.isBlank()) return
-
-            val payload = MirrorPayload.fromJson(CryptoBox.decrypt(pairCode, encrypted))
-            showMirroredNotification(payload, id)
-            if (id.isNotBlank()) Prefs.setLastMessageId(this, id)
-        } catch (_: Exception) {
-        }
-    }
-
-    private fun showMirroredNotification(payload: MirrorPayload, relayId: String) {
-        val sourceApp = payload.appName.ifBlank {
-            payload.packageName.substringAfterLast('.').ifBlank { "Notification" }
-        }
-        val originalTitle = payload.title.trim()
-        val displayTitle = when {
-            originalTitle.isBlank() -> sourceApp
-            originalTitle.equals(sourceApp, ignoreCase = true) -> sourceApp
-            else -> "$sourceApp • $originalTitle"
-        }
-        val body = payload.text.ifBlank { sourceApp }
-        val stableKey = payload.notificationKey.ifBlank { relayId }
-        val localId = (payload.packageName + ":" + stableKey).hashCode()
-
-        val builder = Notification.Builder(this, CHANNEL_MIRRORED)
-            .setSmallIcon(R.drawable.ic_notification)
-            .setContentTitle(displayTitle)
-            .setContentText(body)
-            .setSubText(sourceApp)
-            .setStyle(Notification.BigTextStyle().setBigContentTitle(displayTitle).bigText(body))
-            .setAutoCancel(true)
-            .setWhen(payload.postTime.takeIf { it > 0 } ?: System.currentTimeMillis())
-
-        if (payload.canReply && payload.notificationKey.isNotBlank()) {
-            builder.addAction(replyAction(payload, localId))
-        }
-        if (payload.canMarkRead && payload.notificationKey.isNotBlank()) {
-            builder.addAction(markReadAction(payload, localId))
-        }
-
-        try {
-            (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
-                .notify(localId, builder.build())
-        } catch (_: Exception) {
-        }
-    }
-
-    private fun replyAction(payload: MirrorPayload, localId: Int): Notification.Action {
-        val intent = commandIntent(ActionCommandReceiver.ACTION_REPLY, payload, localId)
-        val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
-        } else {
-            PendingIntent.FLAG_UPDATE_CURRENT
-        }
-        val pendingIntent = PendingIntent.getBroadcast(
-            this,
-            (payload.notificationKey + ":reply").hashCode(),
-            intent,
-            flags
-        )
-        val remoteInput = RemoteInput.Builder(ActionCommandReceiver.KEY_REPLY_TEXT)
-            .setLabel("Reply")
-            .build()
-
-        val actionIcon = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            Icon.createWithResource(this, R.drawable.ic_notification)
-        } else null
-
-        val actionBuilder = if (actionIcon != null) {
-            Notification.Action.Builder(actionIcon, "Reply", pendingIntent)
-        } else {
-            @Suppress("DEPRECATION")
-            Notification.Action.Builder(R.drawable.ic_notification, "Reply", pendingIntent)
-        }
-
-        return actionBuilder
-            .addRemoteInput(remoteInput)
-            .setAllowGeneratedReplies(true)
-            .setSemanticAction(Notification.Action.SEMANTIC_ACTION_REPLY)
-            .build()
-    }
-
-    private fun markReadAction(payload: MirrorPayload, localId: Int): Notification.Action {
-        val intent = commandIntent(ActionCommandReceiver.ACTION_MARK_READ, payload, localId)
-        val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        } else {
-            PendingIntent.FLAG_UPDATE_CURRENT
-        }
-        val pendingIntent = PendingIntent.getBroadcast(
-            this,
-            (payload.notificationKey + ":read").hashCode(),
-            intent,
-            flags
-        )
-        val actionIcon = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            Icon.createWithResource(this, R.drawable.ic_notification)
-        } else null
-
-        val actionBuilder = if (actionIcon != null) {
-            Notification.Action.Builder(actionIcon, "Mark as read", pendingIntent)
-        } else {
-            @Suppress("DEPRECATION")
-            Notification.Action.Builder(R.drawable.ic_notification, "Mark as read", pendingIntent)
-        }
-
-        return actionBuilder
-            .setSemanticAction(Notification.Action.SEMANTIC_ACTION_MARK_AS_READ)
-            .build()
-    }
-
-    private fun commandIntent(action: String, payload: MirrorPayload, localId: Int) =
-        Intent(this, ActionCommandReceiver::class.java).apply {
-            this.action = action
-            putExtra(ActionCommandReceiver.EXTRA_PACKAGE, payload.packageName)
-            putExtra(ActionCommandReceiver.EXTRA_NOTIFICATION_KEY, payload.notificationKey)
-            putExtra(ActionCommandReceiver.EXTRA_LOCAL_ID, localId)
-        }
-
-    private fun createChannels() {
-        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        manager.createNotificationChannel(
-            NotificationChannel(CHANNEL_SERVICE, "Receiver", NotificationManager.IMPORTANCE_MIN).apply {
-                setShowBadge(false)
+            val raw = CryptoBox.decrypt(pairCode, envelope.getString("message"))
+            if (commandMode) {
+                val command = CommandPayload.fromJson(raw)
+                if (!command.isFresh() || MirrorNotificationListener.dispatchCommand(this, command, id))
+                    Prefs.setLastCommandId(this, id)
+            } else if (SyncRepository.receive(this, MirrorPayload.fromJson(raw), id)) {
+                Prefs.setLastMessageId(this, id)
             }
-        )
-        manager.createNotificationChannel(
-            NotificationChannel(CHANNEL_MIRRORED, "Mirrored", NotificationManager.IMPORTANCE_DEFAULT)
-        )
+        }
     }
 
-    private fun serviceNotification(status: String): Notification =
-        Notification.Builder(this, CHANNEL_SERVICE)
-            .setSmallIcon(R.drawable.ic_notification)
-            .setContentTitle("Notification")
-            .setContentText(status)
-            .setOngoing(true)
-            .build()
+    private fun disconnect() {
+        handler.removeCallbacks(reconnect)
+        reconnectPending = false
+        val old = socket
+        socket = null
+        old?.cancel()
+    }
 
-    private fun updateServiceNotification(status: String) {
-        try {
-            (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
-                .notify(SERVICE_NOTIFICATION_ID, serviceNotification(status))
-        } catch (_: Exception) {
-        }
+    private fun manager() = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+    private fun notification(): Notification = Notification.Builder(this, CHANNEL)
+        .setSmallIcon(R.drawable.ic_notification).setContentTitle("Notification • Compatibility")
+        .setShowWhen(false).setOngoing(true).setOnlyAlertOnce(true).build()
+
+    private fun updateStatus(status: String) {
+        Diagnostics.connection(this, status)
     }
 
     private fun stopReceiver() {
         running = false
-        webSocket?.close(1000, "stop")
-        webSocket = null
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                stopForeground(STOP_FOREGROUND_REMOVE)
-            } else {
-                @Suppress("DEPRECATION")
-                stopForeground(true)
-            }
-        } catch (_: Exception) {
-        }
+        disconnect()
+        stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
 
     companion object {
-        private const val SERVICE_NOTIFICATION_ID = 1001
-        private const val CHANNEL_SERVICE = "receiver_service"
-        private const val CHANNEL_MIRRORED = "mirrored_notifications"
+        private const val SERVICE_ID = 1001
+        private const val CHANNEL = "receiver_service"
     }
 }
