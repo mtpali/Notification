@@ -3,8 +3,13 @@ package com.mtpali.notification
 import android.content.Context
 
 object SyncRepository {
-    @Synchronized
     fun receive(context: Context, payload: MirrorPayload, relayId: String): Boolean {
+        if (payload.event == MirrorPayload.EVENT_ACTION_RESULT) return ActionResults.receive(context, payload)
+        return receiveMirror(context, payload, relayId)
+    }
+
+    @Synchronized
+    private fun receiveMirror(context: Context, payload: MirrorPayload, relayId: String): Boolean {
         return try {
             val prefs = context.getSharedPreferences("mirror_sync", Context.MODE_PRIVATE)
             if (!prefs.getBoolean("migrated", false)) {
@@ -23,6 +28,11 @@ object SyncRepository {
             false
         }
     }
+
+    @Synchronized
+    fun isCurrent(context: Context, tag: String, generation: String): Boolean =
+        SyncLedger(context.getSharedPreferences("mirror_sync", Context.MODE_PRIVATE)
+            .getString("ledger", "").orEmpty()).isCurrent(tag, generation)
 
     @Synchronized
     fun clear(context: Context) {

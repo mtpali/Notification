@@ -31,7 +31,8 @@ object Diagnostics {
         val connection = if (Prefs.receiverTransport(context) == Prefs.RECEIVER_STABLE)
             p.getString("connection", "Disconnected").orEmpty() else "FCM"
         val error = p.getString("error", "").orEmpty()
+        val action = ActionResults.summary(context)
         return "$connection • Pending ${OutboxStore.count(context)}\nSent ${time("sent")} • Received ${time("received")}" +
-            if (error.isBlank()) "" else "\n$error"
+            (if (action.isBlank()) "" else "\n$action") + (if (error.isBlank()) "" else "\n$error")
     }
 }

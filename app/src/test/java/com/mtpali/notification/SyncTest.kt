@@ -67,12 +67,11 @@ class SyncTest {
         assertTrue(CryptoBox.encrypt("123456", json).length <= PayloadBudget.MAX_ENCRYPTED_BYTES)
     }
 
-    @Test fun replyFitsBudgetAndRemainsAnAction() {
+    @Test fun oversizedUserReplyIsRejectedWithoutTruncation() {
         val command = CommandPayload(CommandPayload.TYPE_REPLY, "com.example", "key", "سلام".repeat(1000))
-        val json = command.toTransportJson()
-        assertTrue(json.toByteArray(Charsets.UTF_8).size <= PayloadBudget.MAX_PLAINTEXT_BYTES)
-        assertEquals(CommandPayload.TYPE_REPLY, CommandPayload.fromJson(json).type)
-        assertTrue(CommandPayload.fromJson(json).text.isNotEmpty())
+        assertTrue(runCatching { command.toTransportJson() }.isFailure)
+        val valid = command.copy(text = "  سلام 🌍  ")
+        assertEquals(valid.text, CommandPayload.fromJson(valid.toTransportJson()).text)
     }
 
     @Test fun commandRejectsExpiredOrFutureMessages() {

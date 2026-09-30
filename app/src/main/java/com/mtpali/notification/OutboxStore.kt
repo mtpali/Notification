@@ -39,6 +39,8 @@ object OutboxStore {
     fun add(context: Context, message: OutboxMessage): Boolean {
         val messages = read(context)
         val now = System.currentTimeMillis()
+        if (messages.any { it.kind == "command" && it.expiresAt <= now })
+            Diagnostics.error(context, "A queued action expired; check Sender before retrying")
         messages.removeAll { it.expiresAt <= now ||
             (message.coalesceKey.isNotBlank() && it.coalesceKey == message.coalesceKey && it.topic == message.topic) }
         if (messages.size >= 256) return false
@@ -53,6 +55,8 @@ object OutboxStore {
         val pairCode = Prefs.pairCode(context)
         val mirrorTopic = CryptoBox.topic(pairCode)
         val commandTopic = CryptoBox.commandTopic(pairCode)
+        if (messages.any { it.kind == "command" && it.expiresAt <= now })
+            Diagnostics.error(context, "A queued action expired; check Sender before retrying")
         val removed = messages.removeAll { it.expiresAt <= now ||
             it.transport != Prefs.receiverTransport(context) || it.mode != Prefs.mode(context) ||
             it.relayUrl != Prefs.relayUrl(context).trimEnd('/') ||

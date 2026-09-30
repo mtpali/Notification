@@ -22,6 +22,9 @@ import okhttp3.WebSocketListener
 import org.json.JSONObject
 import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.RejectedExecutionException
 import kotlin.random.Random
 
 /** One ntfy socket on either phone; Sender listens for actions, Receiver for mirrors. */
@@ -29,7 +32,10 @@ class ReceiverService : Service() {
     private val handler = Handler(Looper.getMainLooper())
     private lateinit var client: OkHttpClient
     private lateinit var connectivity: ConnectivityManager
-    private var running = false
+    @Volatile private var running = false
+    @Volatile private var receiveEpoch = 0L
+    private val receiveIo = ThreadPoolExecutor(1, 1, 30, TimeUnit.SECONDS, ArrayBlockingQueue(256),
+        { runnable -> Thread(runnable, "notification-compatibility") }).apply { allowCoreThreadTimeOut(true) }
     private var registered = false
     private var socket: WebSocket? = null
     private var session = ""
@@ -94,6 +100,7 @@ class ReceiverService : Service() {
         running = false
         handler.removeCallbacksAndMessages(null)
         disconnect()
+        receiveIo.shutdownNow()
         if (registered) runCatching { connectivity.unregisterNetworkCallback(networkCallback) }
         if (::client.isInitialized) {
             client.dispatcher.executorService.shutdown()
@@ -155,8 +162,18 @@ class ReceiverService : Service() {
                 }
                 override fun onMessage(webSocket: WebSocket, text: String) {
                     handler.post {
-                        if (socket === webSocket && running && session == activeSession && shouldRun())
-                            receive(pairCode, commandMode, text)
+                        if (socket !== webSocket || !running || session != activeSession || !shouldRun()) return@post
+                        val epoch = receiveEpoch
+                        try {
+                            receiveIo.execute {
+                                if (running && epoch == receiveEpoch) receive(pairCode, commandMode, text, epoch)
+                            }
+                        } catch (_: RejectedExecutionException) {
+                            // Leave the cursor before the gap. Reconnection replays the uncommitted batch.
+                            disconnect()
+                            Diagnostics.error(applicationContext, "Compatibility backlog; reconnecting to replay")
+                            scheduleReconnect()
+                        }
                     }
                 }
                 override fun onClosing(webSocket: WebSocket, code: Int, reason: String) { webSocket.close(code, reason) }
@@ -190,23 +207,30 @@ class ReceiverService : Service() {
         handler.postDelayed(reconnect, delay)
     }
 
-    private fun receive(pairCode: String, commandMode: Boolean, line: String) {
+    private fun receive(pairCode: String, commandMode: Boolean, line: String, epoch: Long) {
         runCatching {
             val envelope = JSONObject(line)
             if (envelope.optString("event") != "message") return
             val id = envelope.optString("id")
             val raw = CryptoBox.decrypt(pairCode, envelope.getString("message"))
+            if (!running || epoch != receiveEpoch || pairCode != Prefs.pairCode(this)) return
+            val accepted: Boolean
             if (commandMode) {
                 val command = CommandPayload.fromJson(raw)
-                if (!command.isFresh() || MirrorNotificationListener.dispatchCommand(this, command, id))
-                    Prefs.setLastCommandId(this, id)
-            } else if (SyncRepository.receive(this, MirrorPayload.fromJson(raw), id)) {
-                Prefs.setLastMessageId(this, id)
+                accepted = !command.isFresh() || MirrorNotificationListener.dispatchCommand(this, command, id, pairCode)
+            } else {
+                accepted = SyncRepository.receive(this, MirrorPayload.fromJson(raw), id)
+            }
+            if (accepted) handler.post {
+                if (running && epoch == receiveEpoch && pairCode == Prefs.pairCode(this)) {
+                    if (commandMode) Prefs.setLastCommandId(this, id) else Prefs.setLastMessageId(this, id)
+                }
             }
         }
     }
 
     private fun disconnect() {
+        receiveEpoch++
         handler.removeCallbacks(reconnect)
         reconnectPending = false
         val old = socket

@@ -5,7 +5,7 @@ import org.json.JSONObject
 
 /** Bounded state, independent of Android, so ordering and reconciliation are testable. */
 class SyncLedger(raw: String = "") {
-    data class Row(val version: Long, val visible: Boolean)
+    data class Row(val version: Long, val visible: Boolean, val generation: String = "")
     data class Result(val show: Boolean = false, val cancel: List<String> = emptyList())
     private data class Snapshot(
         val id: String, val time: Long, val count: Int,
@@ -24,7 +24,7 @@ class SyncLedger(raw: String = "") {
             val entries = json.optJSONObject("rows") ?: JSONObject()
             entries.keys().forEach { key ->
                 val row = entries.getJSONObject(key)
-                rows[key] = Row(row.getLong("time"), row.getBoolean("visible"))
+                rows[key] = Row(row.getLong("time"), row.getBoolean("visible"), row.optString("generation"))
             }
             val ids = json.optJSONArray("ids") ?: JSONArray()
             for (i in 0 until ids.length()) messageIds.add(ids.getString(i))
@@ -72,7 +72,7 @@ class SyncLedger(raw: String = "") {
             require(payload.notificationKey.isNotBlank() || relayId.isNotBlank())
             if (payload.eventTime > (rows[key]?.version ?: 0)) {
                 show = payload.event == MirrorPayload.EVENT_UPSERT
-                rows[key] = Row(payload.eventTime, show)
+                rows[key] = Row(payload.eventTime, show, payload.generation)
                 if (!show) cancel.add(key)
             }
         }
@@ -95,7 +95,8 @@ class SyncLedger(raw: String = "") {
 
     fun toJson(): String = JSONObject().apply {
         put("rows", JSONObject().apply {
-            rows.forEach { (key, row) -> put(key, JSONObject().put("time", row.version).put("visible", row.visible)) }
+            rows.forEach { (key, row) -> put(key, JSONObject().put("time", row.version)
+                .put("visible", row.visible).put("generation", row.generation)) }
         })
         put("ids", JSONArray(messageIds.toList()))
         put("completed", completedSnapshotTime)
@@ -104,6 +105,9 @@ class SyncLedger(raw: String = "") {
                 .put("start", s.start).put("end", s.endTime).put("seen", JSONArray(s.seen.toList())))
         }
     }.toString()
+
+    fun isCurrent(tag: String, generation: String): Boolean = generation.isNotBlank() &&
+        rows[tag]?.let { it.visible && it.generation == generation } == true
 
     private fun trim() {
         while (messageIds.size > 256) messageIds.remove(messageIds.first())
