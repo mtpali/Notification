@@ -207,6 +207,19 @@ class MirrorNotificationListener : NotificationListenerService() {
             return true
         }
 
+        fun rejectCommand(context: Context, command: CommandPayload, expectedPairCode: String): Boolean {
+            if (command.type == CommandPayload.TYPE_SYNC || command.id.isBlank() ||
+                Prefs.mode(context) != Prefs.MODE_SENDER || expectedPairCode != Prefs.pairCode(context)) return true
+            val status = if (!command.isFresh()) DispatchStatus.EXPIRED
+                else if (command.type !in setOf(CommandPayload.TYPE_REPLY, CommandPayload.TYPE_MARK_READ,
+                    CommandPayload.TYPE_DISMISS)) DispatchStatus.UNSUPPORTED
+                else if (CommandInbox.rejectionRemembered(context, command)) DispatchStatus.BUSY else DispatchStatus.UNKNOWN
+            return RelayClient.publishAccepted(context, MirrorPayload(command.packageName, "", "", "", command.sourcePostTime,
+                command.notificationKey, event = MirrorPayload.EVENT_ACTION_RESULT, eventTime = Prefs.nextEventTime(context),
+                eventId = "result:${command.id}", generation = command.generation, sourceUserId = command.sourceUserId,
+                commandId = command.id, actionStatus = status.name))
+        }
+
         @Synchronized
         private fun requestRebind(context: Context) {
             if (Prefs.mode(context) != Prefs.MODE_SENDER) return

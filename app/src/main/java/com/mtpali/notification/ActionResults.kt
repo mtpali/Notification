@@ -120,6 +120,7 @@ object ActionResults {
         "CANCELLED" -> "Original action was cancelled"
         "INVALID_TEXT" -> "Reply text is invalid"
         "DENIED" -> "Original action was denied"
+        "BUSY" -> "Sender action queue is full; try again shortly"
         "UNKNOWN" -> "Result unknown; check Sender before retrying"
         else -> "Action could not be sent"
     }

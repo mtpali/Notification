@@ -45,6 +45,18 @@ class ReliabilityTest {
         assertNotEquals(NotificationReference.actionId("g", "reply", reply(0)),
             NotificationReference.actionId("g", "reply", reply(0, key = "new_key")))
         assertNotEquals(reply(0).signature(), reply(0).copy(authenticationRequired = true).signature())
+        assertNotEquals(reply(0, key = "a\u0000b").signature(), reply(0).copy(
+            inputKeys = listOf("a", "b"), freeFormKeys = listOf("a", "b")).signature())
+    }
+
+    @Test fun commandDedupDoesNotEvictFreshIdsWhenFullAndSurvivesRestart() {
+        val history = CommandDeduplicator(now = 10, capacity = 2)
+        assertEquals(CommandDeduplicator.Admission.NEW, history.admit("a", 100, 10))
+        assertEquals(CommandDeduplicator.Admission.NEW, history.admit("b", 100, 10))
+        val restored = CommandDeduplicator(history.toJson(), now = 20, capacity = 2)
+        assertEquals(CommandDeduplicator.Admission.FULL, restored.admit("c", 100, 20))
+        assertEquals(CommandDeduplicator.Admission.DUPLICATE, restored.admit("a", 100, 20))
+        assertEquals(CommandDeduplicator.Admission.NEW, restored.admit("c", 200, 101))
     }
 
     @Test fun snapshotReferencesRoundTripWithoutLosingProfileOrAction() {

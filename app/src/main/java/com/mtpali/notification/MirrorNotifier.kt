@@ -50,7 +50,6 @@ object MirrorNotifier {
                         pending(context, ActionCommandReceiver.ACTION_REPLY, payload, tag, true))
                         .addRemoteInput(RemoteInput.Builder(ActionCommandReceiver.KEY_REPLY_TEXT).setLabel("Reply").build())
                         .setAllowGeneratedReplies(true).setSemanticAction(Notification.Action.SEMANTIC_ACTION_REPLY)
-                        .setShowsUserInterface(false)
                     if (Build.VERSION.SDK_INT >= 31) reply.setAuthenticationRequired(true)
                     builder.addAction(reply.build())
                 }

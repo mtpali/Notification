@@ -39,7 +39,8 @@ object ReplyCore {
         }
         add("native", notification.actions.orEmpty().toList())
         add("wearable", runCatching { Notification.WearableExtender(notification).actions.toList() }.getOrDefault(emptyList()))
-        val userId = sbn.user.identifier
+        // UserHandle.hashCode is public and identifies the handle; getIdentifier is hidden on SDK 34.
+        val userId = sbn.user.hashCode()
         val generation = NotificationReference.hash(sbn.packageName, sbn.key, sbn.postTime.toString(),
             userId.toString(), title, text, notification.`when`.toString(), notification.shortcutId.orEmpty(),
             notification.extras.getCharSequence(Notification.EXTRA_CONVERSATION_TITLE)?.toString().orEmpty(),

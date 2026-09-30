@@ -2,6 +2,8 @@ package com.mtpali.notification
 
 import java.security.MessageDigest
 import java.nio.ByteBuffer
+import org.json.JSONArray
+import org.json.JSONObject
 
 /** Metadata only. PendingIntent objects never leave the source phone. */
 data class ActionDescriptor(
@@ -14,9 +16,9 @@ data class ActionDescriptor(
     val immutable: Boolean = false,
     val authenticationRequired: Boolean = false
 ) {
-    fun signature(): String = NotificationReference.hash(origin, index.toString(), semantic.toString(),
-        inputKeys.joinToString("\u0000"), freeFormKeys.joinToString("\u0000"), hasIntent.toString(),
-        immutable.toString(), authenticationRequired.toString())
+    fun signature(): String = NotificationReference.hash(*(listOf(origin, index.toString(), semantic.toString(),
+        inputKeys.size.toString()) + inputKeys + listOf(freeFormKeys.size.toString()) + freeFormKeys +
+        listOf(hasIntent.toString(), immutable.toString(), authenticationRequired.toString())).toTypedArray())
 }
 
 object ActionPolicy {
@@ -38,7 +40,7 @@ object ActionPolicy {
     }
 
     fun markRead(actions: List<ActionDescriptor>): ActionDescriptor? =
-        preferred(actions.filter { it.hasIntent && it.semantic == MARK_READ }).singleOrNull()
+        preferred(actions.filter { it.hasIntent && it.semantic == MARK_READ && it.inputKeys.isEmpty() }).singleOrNull()
 
     private fun preferred(actions: List<ActionDescriptor>): List<ActionDescriptor> =
         actions.filter { it.origin == "native" }.ifEmpty { actions }
@@ -66,9 +68,37 @@ object NotificationReference {
 }
 
 enum class DispatchStatus {
-    DISPATCHED, STALE, EXPIRED, UNSUPPORTED, NEEDS_UNLOCK, CANCELLED, INVALID_TEXT, DENIED, UNKNOWN;
+    DISPATCHED, STALE, EXPIRED, UNSUPPORTED, NEEDS_UNLOCK, CANCELLED, INVALID_TEXT, DENIED, BUSY, UNKNOWN;
 
     companion object {
         fun parse(value: String): DispatchStatus? = entries.firstOrNull { it.name == value }
     }
+}
+
+/** Never evict an unexpired command ID to make room: that would allow a replay to execute twice. */
+class CommandDeduplicator(raw: String = "", now: Long = System.currentTimeMillis(), private val capacity: Int = 256) {
+    enum class Admission { NEW, DUPLICATE, FULL }
+    private val ids = linkedMapOf<String, Long>()
+    init {
+        val list = runCatching { JSONArray(raw) }.getOrDefault(JSONArray())
+        for (i in 0 until list.length()) {
+            val row = list.optJSONObject(i)
+            val id = row?.optString("id") ?: list.optString(i)
+            val expiry = row?.optLong("expires") ?: (now + CommandPayload.MAX_AGE_MS)
+            if (id.isNotBlank() && expiry >= now) ids[id] = expiry
+        }
+    }
+
+    fun admit(id: String, expiresAt: Long, now: Long): Admission {
+        ids.entries.removeAll { it.value < now }
+        if (id in ids) return Admission.DUPLICATE
+        if (ids.size >= capacity) return Admission.FULL
+        ids[id] = expiresAt
+        return Admission.NEW
+    }
+
+    fun toJson(): String = JSONArray(ids.map { (id, expiry) ->
+        JSONObject().put("id", id).put("expires", expiry)
+    }).toString()
+    fun contains(id: String): Boolean = id in ids
 }

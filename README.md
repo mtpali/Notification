@@ -30,7 +30,7 @@ transport; no Bridge backend or Telegram Bot API is involved.
   actions requiring source unlock are respected. Mirrored actions require Receiver authentication
   on Android 12+. PendingIntent identity includes the snapshot generation.
 - Receiver durably queues actions. Sender returns an encrypted result such as DISPATCHED, STALE,
-  EXPIRED, NEEDS_UNLOCK, CANCELLED, UNSUPPORTED, DENIED or UNKNOWN. The notification and status
+  EXPIRED, NEEDS_UNLOCK, CANCELLED, UNSUPPORTED, DENIED, BUSY or UNKNOWN. The notification and status
   screen show the result. Mark as read only clears the matching mirror after DISPATCHED.
 - DISPATCHED means the source PendingIntent was dispatched. It does not prove delivery to Telegram
   servers or that a message was read.
@@ -136,6 +136,9 @@ WorkManager. There is no periodic polling in Push mode. R8 and resource shrinkin
   Action results never coalesce with notification updates or removals.
 - The source action inbox stores encrypted commands and at most 32 queued actions. The Receiver
   retains at most 64 action-status records; reply text is not stored in those records.
+- Sender retains up to 256 unexpired command IDs. It rejects new actions explicitly when that
+  history is full instead of evicting IDs that could allow a duplicate dispatch. Rejected actions
+  remain rejected on replay; queued actions are retained in their original order.
 - Queued mirror events expire after one hour; commands expire after ten minutes. FCM delivery TTL is five minutes.
 - Sync snapshots cover up to 200 active notifications. Incomplete snapshots never clear unseen notifications.
 - Receiver retains up to 512 ordering records and the latest 256 message IDs.

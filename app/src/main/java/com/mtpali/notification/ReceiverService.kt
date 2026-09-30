@@ -188,6 +188,7 @@ class ReceiverService : Service() {
     private fun failed(webSocket: WebSocket, activeSession: String, resetCursor: Boolean) {
         handler.post {
             if (!running || socket !== webSocket || session != activeSession) return@post
+            receiveEpoch++
             socket = null
             if (resetCursor) {
                 if (Prefs.mode(this) == Prefs.MODE_SENDER) Prefs.setLastCommandId(this, "")
@@ -217,7 +218,12 @@ class ReceiverService : Service() {
             val accepted: Boolean
             if (commandMode) {
                 val command = CommandPayload.fromJson(raw)
-                accepted = !command.isFresh() || MirrorNotificationListener.dispatchCommand(this, command, id, pairCode)
+                accepted = if (!command.isFresh()) MirrorNotificationListener.rejectCommand(this, command, pairCode)
+                    else MirrorNotificationListener.dispatchCommand(this, command, id, pairCode) ||
+                        MirrorNotificationListener.rejectCommand(this, command, pairCode)
+                if (!accepted) handler.post {
+                    if (running && epoch == receiveEpoch) { disconnect(); scheduleReconnect() }
+                }
             } else {
                 accepted = SyncRepository.receive(this, MirrorPayload.fromJson(raw), id)
             }

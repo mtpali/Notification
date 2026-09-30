@@ -15,17 +15,28 @@ object CommandInbox {
         val p = prefs(context)
         val id = command.id.ifBlank { relayId }
         if (id.isBlank()) return false
-        val ids = read(p.getString("ids", "[]").orEmpty())
-        if (id.isNotBlank() && (0 until ids.length()).any { ids.optString(it) == id }) return true
+        val now = System.currentTimeMillis()
+        val ids = CommandDeduplicator(p.getString("ids", "[]").orEmpty(), now)
+        val rejected = CommandDeduplicator(p.getString("rejected_ids", "[]").orEmpty(), now)
+        when (ids.admit(id, command.createdAt + CommandPayload.MAX_AGE_MS, now)) {
+            CommandDeduplicator.Admission.DUPLICATE -> return !rejected.contains(id)
+            CommandDeduplicator.Admission.FULL -> {
+                // A rejected command must not become executable when an old history slot expires.
+                p.edit().putLong("reject_before", maxOf(command.createdAt, p.getLong("reject_before", 0))).commit()
+                Diagnostics.error(context, "Too many recent actions; wait before trying again")
+                return false
+            }
+            CommandDeduplicator.Admission.NEW -> Unit
+        }
         val queue = read(p.getString("queue", "[]").orEmpty())
-        if (queue.length() >= 32) {
+        if (queue.length() >= 32 || command.createdAt <= p.getLong("reject_before", 0)) {
+            rejected.admit(id, command.createdAt + CommandPayload.MAX_AGE_MS, now)
+            p.edit().putString("ids", ids.toJson()).putString("rejected_ids", rejected.toJson()).commit()
             Diagnostics.error(context, "Too many pending actions")
             return false
         }
         queue.put(CryptoBox.encrypt(pair, command.copy(id = id).toJson()))
-        if (id.isNotBlank()) ids.put(id)
-        while (ids.length() > 256) ids.remove(0)
-        return p.edit().putString("queue", queue.toString()).putString("ids", ids.toString()).commit()
+        return p.edit().putString("queue", queue.toString()).putString("ids", ids.toJson()).commit()
     }
 
     @Synchronized
@@ -75,6 +86,13 @@ object CommandInbox {
     @Synchronized
     fun finish(context: Context): Boolean = prefs(context).edit().remove("active")
         .remove("active_scope").remove("active_result").commit()
+
+    @Synchronized
+    fun rejectionRemembered(context: Context, command: CommandPayload): Boolean {
+        val p = prefs(context)
+        return command.createdAt <= p.getLong("reject_before", 0) ||
+            CommandDeduplicator(p.getString("rejected_ids", "[]").orEmpty()).contains(command.id)
+    }
 
     @Synchronized
     fun clear(context: Context) { prefs(context).edit().clear().commit() }
