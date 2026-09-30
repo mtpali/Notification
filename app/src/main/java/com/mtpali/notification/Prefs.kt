@@ -56,6 +56,7 @@ object Prefs {
             OutboxStore.clear(context)
             CommandInbox.clear(context)
             SyncRepository.clear(context)
+            ActionResults.clear(context)
         }
     }
 

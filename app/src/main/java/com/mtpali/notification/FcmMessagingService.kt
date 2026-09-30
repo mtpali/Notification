@@ -25,7 +25,9 @@ class FcmMessagingService : FirebaseMessagingService() {
                     SyncRepository.receive(this, MirrorPayload.fromJson(CryptoBox.decrypt(pairCode, encrypted)), id)
                 }
                 Prefs.mode(this) == Prefs.MODE_SENDER && message.data["kind"] == "command" -> {
-                    MirrorNotificationListener.dispatchCommand(this, CommandPayload.fromJson(CryptoBox.decrypt(pairCode, encrypted)), id)
+                    val command = CommandPayload.fromJson(CryptoBox.decrypt(pairCode, encrypted))
+                    if (!MirrorNotificationListener.dispatchCommand(this, command, id, pairCode))
+                        MirrorNotificationListener.rejectCommand(this, command, pairCode)
                 }
                 Prefs.mode(this) == Prefs.MODE_RECEIVER && Prefs.receiverEnabled(this) -> {
                     val test = message.notification ?: return

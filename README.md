@@ -1,4 +1,4 @@
-# Notification 1.1.1
+# Notification 1.2.0
 
 A small personal Android app for mirroring and synchronizing notifications between two phones.
 One APK supports both Sender and Receiver. Android 9 and later are supported; the build targets Android 14.
@@ -13,6 +13,33 @@ One APK supports both Sender and Receiver. Android 9 and later are supported; th
 - Replayed and out-of-order events are tracked so an older update cannot resurrect a removed notification.
 - An encrypted local send queue retries after Internet connectivity returns.
 - The main screen shows connection state, pending sends, last successful send/receive, and a short error.
+
+## Reliable notification actions
+
+The 1.2.0 work builds on the existing 1.1.1 sync branch and adapts the notification-reply
+architecture described in the supplied Bridge report. It uses Android APIs and this app's own
+transport; no Bridge backend or Telegram Bot API is involved.
+
+- Reply selects an unambiguous semantic reply action, or a unique legacy free-form input.
+  Native actions take precedence; wearable actions provide a fallback. Multiple inputs or
+  ambiguous actions are unsupported. Mark as read requires semantic metadata.
+- Every actionable snapshot carries a generation, an opaque action reference and source profile.
+  Receiver rejects a superseded action locally. Sender reads the current active notification and
+  verifies its package, key, profile, post time, generation and action before dispatch.
+- The original RemoteInput result key is used. Immutable reply intents are rejected on Android 12+;
+  actions requiring source unlock are respected. Mirrored actions require Receiver authentication
+  on Android 12+. PendingIntent identity includes the snapshot generation.
+- Receiver durably queues actions. Sender returns an encrypted result such as DISPATCHED, STALE,
+  EXPIRED, NEEDS_UNLOCK, CANCELLED, UNSUPPORTED, DENIED, BUSY or UNKNOWN. The notification and status
+  screen show the result. Mark as read only clears the matching mirror after DISPATCHED.
+- DISPATCHED means the source PendingIntent was dispatched. It does not prove delivery to Telegram
+  servers or that a message was read.
+- A durable claim is recorded before dispatch. If the process stops around that operation, the
+  action is reported UNKNOWN and is not automatically dispatched again. Check the source app
+  before manually retrying an unknown reply. Exactly-once delivery is not claimed.
+
+Install 1.2.0 on both phones to use generation-checked actions and result acknowledgements.
+The existing pair code, delivery choice and relay settings are preserved during signed updates.
 
 ## Two delivery choices
 
@@ -39,7 +66,7 @@ network aware, and use backoff with jitter. Old socket callbacks cannot reconnec
 
 ## Pair and start
 
-1. Install the same 1.1.1 APK on both phones. In-place updates of the previous CI-signed 1.0.0/1.1.0 builds
+1. Install the same 1.2.0 APK on both phones. In-place updates of the previous CI-signed 1.0.0/1.1.0/1.1.1 builds
    preserve settings because the existing CI debug signing key is retained.
 2. On the first phone choose **Sender**, press **Generate**, and save the generated pair key.
 3. Copy the **exact same** pair key to the second phone, choose **Receiver**, and save.
@@ -98,14 +125,28 @@ No new production dependency was added: Kotlin, Android platform APIs, OkHttp an
 remain the runtime components. The send retry queue uses Android JobScheduler rather than adding
 WorkManager. There is no periodic polling in Push mode. R8 and resource shrinking remain enabled.
 
+- Notification capture runs on one background worker with at most 256 pending events. Updates
+  coalesce without crossing a removal; overflow triggers active-state reconciliation. Commands
+  have a separate durable inbox and reserved work slot.
+- Application labels are cached for up to 128 packages. Unchanged snapshots are deduplicated before
+  event-time disk writes, encryption and network enqueue. Duplicate network-flush work coalesces.
+- Compatibility decrypts/processes received envelopes on a bounded background queue. Queue
+  overload reconnects without advancing the replay cursor beyond the gap.
 - Up to 256 encrypted sends are kept locally; ordinary updates for one source notification coalesce.
+  Action results never coalesce with notification updates or removals.
+- The source action inbox stores encrypted commands and at most 32 queued actions. The Receiver
+  retains at most 64 action-status records; reply text is not stored in those records.
+- Sender retains up to 256 unexpired command IDs. It rejects new actions explicitly when that
+  history is full instead of evicting IDs that could allow a duplicate dispatch. Rejected actions
+  remain rejected on replay; queued actions are retained in their original order.
 - Queued mirror events expire after one hour; commands expire after ten minutes. FCM delivery TTL is five minutes.
 - Sync snapshots cover up to 200 active notifications. Incomplete snapshots never clear unseen notifications.
 - Receiver retains up to 512 ordering records and the latest 256 message IDs.
-- Large notification/reply text is shortened at Unicode code-point boundaries to fit the topic budget.
+- Large notification text is shortened at Unicode code-point boundaries to fit the topic budget.
+  Replies are rejected with a visible error if they exceed the byte budget; user text is never silently shortened.
 - Notification actions depend on the original app exposing a supported action and it still being active.
 - A queue acknowledgement means saved for sending; the status screen records actual HTTP send success,
-  which is not an acknowledgement from the receiving phone.
+  which differs from the source-side action result described below.
 
 ## Build and validation
 
@@ -116,20 +157,26 @@ gradle --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleRelease
 node --test relay/test/relay.test.js
 ```
 
-GitHub Actions restores the stable CI debug signature, tests Android sync/crypto rules and Worker
+GitHub Actions restores the stable CI debug signature, tests Android sync/crypto, action-selection, generation, acknowledgement and bounded-queue rules and Worker
 behavior, runs Android lint, builds the signed release APK with R8 obfuscation/resource shrinking,
-and uploads it as `Notification-1.1.1-optimized-apk`. CI verifies that the obfuscation mapping exists
+and uploads it as `Notification-1.2.0-optimized-apk`. CI verifies that the obfuscation mapping exists
 and reports the APK byte size and SHA-256.
 The extra JUnit/JSON dependencies are test-only and are not included in the APK.
 
-Before merging, test on both real phones in both delivery modes:
+No connected Android phone or emulator is available in the development workspace. CI build, lint
+and unit tests verify code and rules; they do not establish real battery consumption. Before
+merging, test on both real phones in both delivery modes:
 
 1. New notification, content update, Sender removal and Receiver swipe-to-dismiss.
-2. Reply and Mark as read, including an action whose original notification has already disappeared.
+2. Reply and Mark as read, including stale generation, vanished notification, locked Sender,
+   immutable/cancelled PendingIntent and ambiguous actions. Verify the result on Receiver.
 3. Receiver offline, Sender offline, restore connectivity, then **Sync now**.
 4. Swipe from Recents, screen off/Doze, reboot, and network/VPN changes.
 5. Notification permission denied then granted, pair/mode changes, and stopping Compatibility during reconnect.
-6. Confirm size, battery usage and duplicate behavior with typical selected apps.
+6. Confirm size, battery usage and duplicate behavior with typical selected apps. Compare
+   battery drain, wakeups, transfer latency and network traffic on the same phones and workload.
+7. Interrupt the process around dispatch: UNKNOWN must never trigger automatic reply replay.
+8. Oversized Persian/emoji replies must show an error without sending a shortened message.
 
 Existing draft PRs #1 and #2 are unchanged. Keep this work in a separate draft PR until real-device
 and deployed-Worker validation are complete; do not merge to main without the user's approval.

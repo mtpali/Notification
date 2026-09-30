@@ -6,10 +6,12 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.util.UUID
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.random.Random
 
 object RelayClient {
     private val executor = Executors.newSingleThreadExecutor()
+    private val flushing = AtomicBoolean(false)
 
     /** Completion means durably queued; actual send results are visible in Diagnostics. */
     fun publish(context: Context, payload: MirrorPayload, onComplete: ((Boolean) -> Unit)? = null) {
@@ -19,14 +21,19 @@ object RelayClient {
 
     fun publishAccepted(context: Context, payload: MirrorPayload): Boolean =
         enqueue(context, "mirror", payload.toTransportJsonSafe(), payload.eventId,
-            if (payload.snapshotId.isBlank() && payload.notificationKey.isNotBlank())
+            if (payload.event in setOf(MirrorPayload.EVENT_UPSERT, MirrorPayload.EVENT_REMOVE) &&
+                payload.snapshotId.isBlank() && payload.notificationKey.isNotBlank())
                 "${payload.packageName}:${payload.notificationKey}" else "", 60 * 60_000L,
             if (payload.event == MirrorPayload.EVENT_UPSERT) "high" else "normal")
 
     fun publishCommand(context: Context, payload: CommandPayload, onComplete: ((Boolean) -> Unit)? = null) {
-        val raw = runCatching { payload.toTransportJson() }.getOrNull()
-        val accepted = enqueue(context, "command", raw, payload.id, "", CommandPayload.MAX_AGE_MS)
+        val accepted = publishCommandAccepted(context, payload)
         onComplete?.invoke(accepted)
+    }
+
+    fun publishCommandAccepted(context: Context, payload: CommandPayload): Boolean {
+        val raw = runCatching { payload.toTransportJson() }.getOrNull()
+        return enqueue(context, "command", raw, payload.id, "", CommandPayload.MAX_AGE_MS)
     }
 
     fun requestSync(context: Context) {
@@ -64,6 +71,10 @@ object RelayClient {
 
     fun flush(context: Context, shouldContinue: () -> Boolean = { true }, onComplete: (() -> Unit)? = null) {
         val app = context.applicationContext
+        if (!flushing.compareAndSet(false, true)) {
+            onComplete?.invoke()
+            return
+        }
         executor.execute {
             try {
                 val deadline = System.currentTimeMillis() + 25_000
@@ -75,6 +86,10 @@ object RelayClient {
                     if (result.sent || !result.retry) {
                         OutboxStore.remove(app, message.id)
                         if (result.sent) Diagnostics.sent(app) else Diagnostics.error(app, result.error)
+                        if (message.kind == "command") {
+                            if (result.sent) ActionResults.submitted(app, message.id)
+                            else ActionResults.failed(app, message.id)
+                        }
                         sent++
                     } else {
                         Diagnostics.error(app, result.error)
@@ -84,7 +99,9 @@ object RelayClient {
                     }
                 }
             } finally {
+                flushing.set(false)
                 if (onComplete != null) onComplete.invoke() else RelayJobService.schedule(app)
+                if (Prefs.mode(app) == Prefs.MODE_SENDER) MirrorNotificationListener.refresh(app)
             }
         }
     }

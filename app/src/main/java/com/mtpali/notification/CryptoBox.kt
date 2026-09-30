@@ -24,10 +24,16 @@ data class MirrorPayload(
     val eventId: String = UUID.randomUUID().toString(),
     val snapshotId: String = "",
     val snapshotTime: Long = 0,
-    val snapshotCount: Int = 0
+    val snapshotCount: Int = 0,
+    val generation: String = "",
+    val replyActionId: String = "",
+    val readActionId: String = "",
+    val sourceUserId: Int = -1,
+    val commandId: String = "",
+    val actionStatus: String = ""
 ) {
     fun toJson(): String = JSONObject().apply {
-        put("v", 3)
+        put("v", 4)
         put("package", packageName)
         put("app", appName)
         put("title", title)
@@ -39,6 +45,12 @@ data class MirrorPayload(
         put("event", event)
         put("time", eventTime)
         put("id", eventId)
+        if (generation.isNotBlank()) put("generation", generation)
+        if (replyActionId.isNotBlank()) put("replyAction", replyActionId)
+        if (readActionId.isNotBlank()) put("readAction", readActionId)
+        if (sourceUserId >= 0) put("user", sourceUserId)
+        if (commandId.isNotBlank()) put("commandId", commandId)
+        if (actionStatus.isNotBlank()) put("actionStatus", actionStatus)
         if (snapshotId.isNotBlank()) {
             put("snapshot", snapshotId)
             put("snapshotTime", snapshotTime)
@@ -53,6 +65,7 @@ data class MirrorPayload(
         const val EVENT_REMOVE = "remove"
         const val EVENT_SNAPSHOT_START = "snapshot_start"
         const val EVENT_SNAPSHOT_END = "snapshot_end"
+        const val EVENT_ACTION_RESULT = "action_result"
         fun fromJson(raw: String): MirrorPayload {
             val json = JSONObject(raw)
             return MirrorPayload(
@@ -69,7 +82,13 @@ data class MirrorPayload(
                 eventId = json.optString("id"),
                 snapshotId = json.optString("snapshot"),
                 snapshotTime = json.optLong("snapshotTime"),
-                snapshotCount = json.optInt("snapshotCount")
+                snapshotCount = json.optInt("snapshotCount"),
+                generation = json.optString("generation"),
+                replyActionId = json.optString("replyAction"),
+                readActionId = json.optString("readAction"),
+                sourceUserId = json.optInt("user", -1),
+                commandId = json.optString("commandId"),
+                actionStatus = json.optString("actionStatus")
             )
         }
     }
@@ -82,10 +101,13 @@ data class CommandPayload(
     val text: String = "",
     val createdAt: Long = System.currentTimeMillis(),
     val id: String = UUID.randomUUID().toString(),
-    val sourcePostTime: Long = 0
+    val sourcePostTime: Long = 0,
+    val generation: String = "",
+    val actionId: String = "",
+    val sourceUserId: Int = -1
 ) {
     fun toJson(): String = JSONObject().apply {
-        put("v", 2)
+        put("v", 3)
         put("type", type)
         put("package", packageName)
         put("key", notificationKey)
@@ -93,9 +115,17 @@ data class CommandPayload(
         put("time", createdAt)
         put("id", id)
         put("postTime", sourcePostTime)
+        put("generation", generation)
+        put("actionId", actionId)
+        put("user", sourceUserId)
     }.toString()
 
-    fun toTransportJson(): String = PayloadBudget.fit(toJson())
+    // A reply is user-authored: reject an oversized command rather than silently shortening it.
+    fun toTransportJson(): String = toJson().also {
+        require(it.toByteArray(Charsets.UTF_8).size <= PayloadBudget.MAX_PLAINTEXT_BYTES) {
+            "Reply exceeds transport limit"
+        }
+    }
 
     fun isFresh(now: Long = System.currentTimeMillis()): Boolean =
         createdAt > 0 && createdAt <= now + 60_000 && now - createdAt <= MAX_AGE_MS
@@ -116,7 +146,10 @@ data class CommandPayload(
                 text = json.optString("text"),
                 createdAt = json.optLong("time"),
                 id = json.optString("id"),
-                sourcePostTime = json.optLong("postTime")
+                sourcePostTime = json.optLong("postTime"),
+                generation = json.optString("generation"),
+                actionId = json.optString("actionId"),
+                sourceUserId = json.optInt("user", -1)
             )
         }
     }
