@@ -60,8 +60,8 @@ class ReceiverService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         try {
             if (Build.VERSION.SDK_INT >= 34) {
-                startForeground(SERVICE_ID, notification("Connecting…"), ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING)
-            } else startForeground(SERVICE_ID, notification("Connecting…"))
+                startForeground(SERVICE_ID, notification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING)
+            } else startForeground(SERVICE_ID, notification())
         } catch (_: RuntimeException) {
             Diagnostics.error(this, "Compatibility service could not start")
             stopSelf()
@@ -215,13 +215,12 @@ class ReceiverService : Service() {
     }
 
     private fun manager() = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-    private fun notification(status: String): Notification = Notification.Builder(this, CHANNEL)
+    private fun notification(): Notification = Notification.Builder(this, CHANNEL)
         .setSmallIcon(R.drawable.ic_notification).setContentTitle("Notification • Compatibility")
-        .setContentText(status).setOngoing(true).setOnlyAlertOnce(true).build()
+        .setShowWhen(false).setOngoing(true).setOnlyAlertOnce(true).build()
 
     private fun updateStatus(status: String) {
         Diagnostics.connection(this, status)
-        runCatching { manager().notify(SERVICE_ID, notification(status)) }
     }
 
     private fun stopReceiver() {

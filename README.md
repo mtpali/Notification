@@ -1,4 +1,4 @@
-# Notification 1.1.0
+# Notification 1.1.1
 
 A small personal Android app for mirroring and synchronizing notifications between two phones.
 One APK supports both Sender and Receiver. Android 9 and later are supported; the build targets Android 14.
@@ -30,15 +30,16 @@ and **Sync now** restores active state after missed messages.
 
 Both phones use encrypted ntfy.sh messages. Receiver keeps one foreground WebSocket for mirrors;
 Sender keeps one foreground WebSocket for commands. **No Cloudflare Worker or Firebase relay key is
-required in this mode.** Select Compatibility on **both** phones. A persistent status notification
-is expected; this mode usually consumes more battery than Push.
+required in this mode.** Select Compatibility on **both** phones. A compact, title-only persistent
+notification is expected; connection state is shown inside the app. Status changes do not rebuild
+the service notification. This mode usually consumes more battery than Push.
 
 The service uses Android 14's remote-messaging foreground-service type. Reconnects are serialized,
 network aware, and use backoff with jitter. Old socket callbacks cannot reconnect a stopped session.
 
 ## Pair and start
 
-1. Install the same 1.1.0 APK on both phones. In-place updates of the previous CI-signed 1.0.0 build
+1. Install the same 1.1.1 APK on both phones. In-place updates of the previous CI-signed 1.0.0/1.1.0 builds
    preserve settings because the existing CI debug signing key is retained.
 2. On the first phone choose **Sender**, press **Generate**, and save the generated pair key.
 3. Copy the **exact same** pair key to the second phone, choose **Receiver**, and save.
@@ -47,8 +48,9 @@ network aware, and use backoff with jitter. Old socket callbacks cannot reconnec
 6. On Receiver allow notification permission and press **Start**.
 7. Send Test, then test a real notification. Use **Sync now** to request current state.
 
-Generate creates a random 128-bit pair key. Existing six-digit pair codes remain supported for
-updates, but their small search space is weak protection; use a generated key for a new pairing.
+Generate creates a random six-digit pair code from 100000 to 999999 using `SecureRandom`.
+Existing 32-character pair keys remain supported, so previously paired phones can keep their key.
+Six-digit codes have a smaller search space than those keys; keep your pairing code private.
 Changing the pair key clears queued messages and mirrored state for the previous pairing.
 Update both phones before using the new sync protocol.
 
@@ -80,6 +82,12 @@ npm run deploy
 Advanced → Private key on both phones. `/health` reports a version and whether service-account
 configuration is present; it does not validate Google permissions or guarantee FCM delivery.
 
+Opening the base Worker URL in a browser returns `{"error":"not_found"}` by design: only
+`GET /health` and `POST /v1/send` are routes. This response alone does not indicate a broken Worker.
+Check `https://notification.mhdvi45.workers.dev/health`, then **Send Test** in Push mode on the phones.
+Keep the Android Relay URL set to the base URL without `/health` or `/v1/send`; the app adds
+`/v1/send` itself. An older deployed Worker may report only `{"ok":true}` at `/health`.
+
 The Worker validates body size, topic direction, ciphertext and FCM's 2 KiB topic data limit.
 It caches OAuth tokens, retries one expired token, propagates retry delays, and avoids logging
 message contents, Google error response bodies or credentials. Plaintext is decrypted only on phones.
@@ -110,7 +118,7 @@ node --test relay/test/relay.test.js
 
 GitHub Actions restores the stable CI debug signature, tests Android sync/crypto rules and Worker
 behavior, runs Android lint, builds the signed release APK with R8 obfuscation/resource shrinking,
-and uploads it as `Notification-1.1.0-optimized-apk`. CI verifies that the obfuscation mapping exists
+and uploads it as `Notification-1.1.1-optimized-apk`. CI verifies that the obfuscation mapping exists
 and reports the APK byte size and SHA-256.
 The extra JUnit/JSON dependencies are test-only and are not included in the APK.
 

@@ -82,13 +82,18 @@ class SyncTest {
         assertFalse(CommandPayload("sync", "", "", createdAt = now + 60_001).isFresh(now))
     }
 
-    @Test fun generatedPairKeyIsStrongAndLegacyCodeRemainsSupported() {
-        val key = CryptoBox.generatePairCode()
-        assertEquals(32, key.length)
-        assertTrue(CryptoBox.isValidPairCode(key))
+    @Test fun generatedPairCodeHasSixAsciiDigitsAndExistingKeysRemainSupported() {
+        repeat(100) {
+            val code = CryptoBox.generatePairCode()
+            assertEquals(6, code.length)
+            assertTrue(code.all { it in '0'..'9' })
+            assertTrue(code.toInt() in 100_000..999_999)
+            assertTrue(CryptoBox.isValidPairCode(code))
+        }
         assertTrue(CryptoBox.isValidPairCode("123456"))
+        assertTrue(CryptoBox.isValidPairCode("0123456789abcdef0123456789abcdef"))
         assertFalse(CryptoBox.isValidPairCode("12345"))
-        assertNotEquals(key, CryptoBox.generatePairCode())
+        assertFalse(CryptoBox.isValidPairCode("1234567"))
     }
 
     @Test fun encryptionRoundTripsAndRejectsWrongKey() {

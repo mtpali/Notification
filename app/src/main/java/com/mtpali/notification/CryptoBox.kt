@@ -125,8 +125,7 @@ data class CommandPayload(
 object CryptoBox {
     private val random = SecureRandom()
 
-    fun generatePairCode(): String = ByteArray(16).also(random::nextBytes)
-        .joinToString("") { "%02x".format(it.toInt() and 0xff) }
+    fun generatePairCode(): String = (100_000 + random.nextInt(900_000)).toString()
 
     fun isValidPairCode(pairCode: String): Boolean =
         (pairCode.length == 6 && pairCode.all { it.isDigit() }) ||

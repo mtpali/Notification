@@ -75,7 +75,7 @@ class MainActivity : Activity() {
 
         root.addView(sectionTitle("Pair"))
         pairInput = EditText(this).apply {
-            hint = "Pair key (legacy 6 digits also supported)"
+            hint = "6-digit Pair Code"
             setSingleLine(true)
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
             setText(Prefs.pairCode(this@MainActivity))
