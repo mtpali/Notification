@@ -108,7 +108,7 @@ object Prefs {
         runCatching { java.net.URI(relayUrl(context)).let {
             it.scheme == "https" && !it.host.isNullOrBlank() && it.userInfo == null &&
                 it.query == null && it.fragment == null
-        } }.getOrDefault(false) && relayToken(context).length >= 24
+        } }.getOrDefault(false) && RelayProtocol.privateKeyError(relayToken(context)).isEmpty()
 
     @Synchronized
     fun nextEventTime(context: Context): Long {

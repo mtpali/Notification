@@ -2,11 +2,15 @@ package com.mtpali.notification
 
 import android.Manifest
 import android.app.Activity
+import android.app.AlertDialog
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Intent
 import android.os.Bundle
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.PersistableBundle
 import android.content.pm.PackageManager
 import android.provider.Settings
 import android.text.InputType
@@ -31,6 +35,8 @@ class MainActivity : Activity() {
     private lateinit var relayTokenInput: EditText
     private lateinit var relayKeyStatus: TextView
     private lateinit var relayKeyButton: Button
+    private lateinit var relayCheckStatus: TextView
+    private lateinit var relayCheckDetails: Button
     private lateinit var senderPanel: LinearLayout
     private lateinit var receiverPanel: LinearLayout
     private lateinit var advancedPanel: LinearLayout
@@ -63,27 +69,31 @@ class MainActivity : Activity() {
             setPadding(0, 0, 0, dp(10))
         })
 
-        root.addView(sectionTitle("This phone"))
+        root.addView(sectionTitle("1. Choose this phone"))
         val modeGroup = RadioGroup(this).apply { orientation = RadioGroup.HORIZONTAL }
         senderRadio = RadioButton(this).apply { text = "Sender" }
         receiverRadio = RadioButton(this).apply { text = "Receiver" }
         modeGroup.addView(senderRadio)
         modeGroup.addView(receiverRadio)
         root.addView(modeGroup)
+        root.addView(TextView(this).apply {
+            text = "Sender: shares notifications. Receiver: shows them on your second phone."
+            textSize = 14f
+        })
 
         if (Prefs.mode(this) == Prefs.MODE_RECEIVER) receiverRadio.isChecked = true
         else senderRadio.isChecked = true
 
-        root.addView(sectionTitle("Pair"))
+        root.addView(sectionTitle("2. Connect the phones"))
         pairInput = EditText(this).apply {
-            hint = "6-digit Pair Code"
+            hint = "Pair code (same on both phones)"
             setSingleLine(true)
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
             setText(Prefs.pairCode(this@MainActivity))
         }
         root.addView(pairInput)
         root.addView(Button(this).apply {
-            text = "Generate"
+            text = "Generate pair code"
             setOnClickListener {
                 pairInput.setText(CryptoBox.generatePairCode())
                 pairInput.setSelection(pairInput.text.length)
@@ -94,22 +104,39 @@ class MainActivity : Activity() {
             text = "Save"
             setOnClickListener { saveSettings(true) }
         })
+        root.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            addView(Button(this@MainActivity).apply {
+                text = "Copy setup"
+                setOnClickListener { copySetup() }
+            }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+            addView(Button(this@MainActivity).apply {
+                text = "Paste setup"
+                setOnClickListener { pasteSetup() }
+            }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        })
+        root.addView(TextView(this).apply {
+            text = "Copy includes the pair code and private key. Transfer it to your second phone, then tap Paste setup."
+            textSize = 13f
+        })
 
         advancedButton = Button(this).apply {
-            text = "Advanced"
+            text = "Connection settings"
             setOnClickListener {
                 advancedPanel.visibility =
                     if (advancedPanel.visibility == View.VISIBLE) View.GONE else View.VISIBLE
-                text = if (advancedPanel.visibility == View.VISIBLE) "Hide Advanced" else "Advanced"
+                text = if (advancedPanel.visibility == View.VISIBLE) "Hide connection settings" else "Connection settings"
             }
         }
         root.addView(advancedButton)
 
         advancedPanel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            visibility = View.GONE
+            visibility = if (Prefs.receiverTransport(this@MainActivity) == Prefs.RECEIVER_PUSH &&
+                !Prefs.relayConfigured(this@MainActivity)) View.VISIBLE else View.GONE
             setPadding(0, dp(4), 0, dp(8))
         }
+        if (advancedPanel.visibility == View.VISIBLE) advancedButton.text = "Hide connection settings"
         advancedPanel.addView(sectionTitle("Delivery"))
 
         val receiverTypeGroup = RadioGroup(this).apply { orientation = RadioGroup.VERTICAL }
@@ -134,7 +161,7 @@ class MainActivity : Activity() {
         fcmSettingsPanel.addView(relayKeyStatus)
 
         relayTokenInput = EditText(this).apply {
-            hint = "Private key"
+            hint = "Private key (at least 24 ASCII characters)"
             setSingleLine(true)
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
             setText(Prefs.relayToken(this@MainActivity))
@@ -168,33 +195,51 @@ class MainActivity : Activity() {
             setText(Prefs.relayUrl(this@MainActivity))
         }
         fcmSettingsPanel.addView(relayUrlInput)
-        val relayCheckStatus = TextView(this)
+        relayCheckStatus = TextView(this)
         fcmSettingsPanel.addView(Button(this).apply {
             text = "Check Worker"
             setOnClickListener {
-                if (!saveSettings(false)) return@setOnClickListener
-                if (!Prefs.relayConfigured(this@MainActivity)) { toast("Enter the Worker private key"); return@setOnClickListener }
+                // Connectivity can be checked before pairing or starting either phone.
+                if (!saveRelaySettings()) return@setOnClickListener
                 isEnabled = false
                 relayCheckStatus.text = "Checking Worker and Firebase…"
+                relayCheckDetails.isEnabled = false
+                val base = Prefs.relayUrl(this@MainActivity)
+                val token = Prefs.relayToken(this@MainActivity)
                 val project = runCatching { FirebaseApp.getInstance().options.projectId.orEmpty() }.getOrDefault("")
-                RelayDiagnostics.check(Prefs.relayUrl(this@MainActivity), Prefs.relayToken(this@MainActivity), project) { result ->
+                RelayDiagnostics.check(base, token, project) { result ->
+                    val current = base == Prefs.relayUrl(applicationContext) && token == Prefs.relayToken(applicationContext)
+                    if (current) Diagnostics.relayCheck(applicationContext, result)
+                    android.util.Log.i("NotificationRelay", result.report)
                     runOnUiThread {
-                        if (!isDestroyed) { isEnabled = true; relayCheckStatus.text = result }
+                        if (!isDestroyed) {
+                            isEnabled = true
+                            renderRelayCheck()
+                            if (!current) relayCheckStatus.text = "Connection settings changed; check again"
+                        }
                     }
                 }
             }
         })
         fcmSettingsPanel.addView(relayCheckStatus)
+        relayCheckDetails = Button(this).apply {
+            text = "Details / copy report"
+            setOnClickListener { showRelayReport() }
+        }
+        fcmSettingsPanel.addView(relayCheckDetails)
+        renderRelayCheck()
         advancedPanel.addView(fcmSettingsPanel)
         root.addView(advancedPanel)
 
+        root.addView(sectionTitle("3. Start sharing"))
+
         senderPanel = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         senderPanel.addView(Button(this).apply {
-            text = "Notification Access"
+            text = "Enable notification access"
             setOnClickListener { openNotificationAccess() }
         })
         senderPanel.addView(Button(this).apply {
-            text = "Apps"
+            text = "Choose apps"
             setOnClickListener {
                 startActivity(Intent(this@MainActivity, AppSelectionActivity::class.java))
             }
@@ -392,6 +437,7 @@ class MainActivity : Activity() {
 
         Prefs.setMode(this, mode)
         Prefs.setPairCode(this, code)
+        resetRelayCheckIfChanged(relayBase, relayTokenInput.text.toString().trim())
         Prefs.setRelayToken(this, relayTokenInput.text.toString())
         if (relayBase != null) Prefs.setRelayUrl(this, relayBase)
         Prefs.setReceiverTransport(this, transport)
@@ -444,7 +490,7 @@ class MainActivity : Activity() {
 
     private fun updateRelayKeyUi() {
         if (!::relayTokenInput.isInitialized || !::relayKeyStatus.isInitialized || !::relayKeyButton.isInitialized) return
-        val saved = Prefs.relayToken(this).length >= 24
+        val saved = RelayProtocol.privateKeyError(Prefs.relayToken(this)).isEmpty()
         relayKeyStatus.text = if (saved) "Private key saved ✓" else "Private key"
         relayTokenInput.visibility = if (!saved || editingRelayKey) View.VISIBLE else View.GONE
         relayKeyButton.visibility = if (saved) View.VISIBLE else View.GONE
@@ -453,11 +499,106 @@ class MainActivity : Activity() {
 
     private fun showRelaySetup() {
         advancedPanel.visibility = View.VISIBLE
-        advancedButton.text = "Hide Advanced"
+        advancedButton.text = "Hide connection settings"
         editingRelayKey = true
         updateDeliveryOptions()
         updateRelayKeyUi()
         relayTokenInput.requestFocus()
+    }
+
+    private fun resetRelayCheckIfChanged(base: String?, token: String) {
+        if ((base != null && base != Prefs.relayUrl(this)) || token != Prefs.relayToken(this)) {
+            Diagnostics.clearRelayCheck(this)
+            renderRelayCheck()
+        }
+    }
+
+    private fun saveRelaySettings(): Boolean {
+        val base = runCatching { RelayProtocol.baseUrl(relayUrlInput.text.toString().ifBlank { Prefs.DEFAULT_RELAY_URL }) }.getOrNull()
+        if (base == null) {
+            relayUrlInput.error = "Use a valid HTTPS Worker URL"
+            relayCheckStatus.text = "Use a valid HTTPS Worker URL"
+            relayCheckDetails.isEnabled = false
+            relayUrlInput.requestFocus()
+            return false
+        }
+        val token = relayTokenInput.text.toString().trim()
+        val keyError = RelayProtocol.privateKeyError(token)
+        if (keyError.isNotEmpty()) {
+            showRelaySetup()
+            relayTokenInput.error = keyError
+            relayCheckStatus.text = keyError
+            relayCheckDetails.isEnabled = false
+            return false
+        }
+        relayUrlInput.error = null
+        relayTokenInput.error = null
+        resetRelayCheckIfChanged(base, token)
+        Prefs.setRelayUrl(this, base)
+        Prefs.setRelayToken(this, token)
+        relayUrlInput.setText(base)
+        editingRelayKey = false
+        updateRelayKeyUi()
+        updateInfo()
+        return true
+    }
+
+    private fun copySetup() {
+        if (!saveSettings(false)) return
+        val encoded = runCatching {
+            ConnectionSetup.create(Prefs.pairCode(this), Prefs.relayUrl(this),
+                Prefs.relayToken(this), Prefs.receiverTransport(this)).encode()
+        }.getOrElse {
+            if (Prefs.receiverTransport(this) == Prefs.RECEIVER_PUSH && !Prefs.relayConfigured(this)) showRelaySetup()
+            toast(it.message ?: "Complete connection settings first")
+            return
+        }
+        copyText("Notification setup", encoded, sensitive = true)
+    }
+
+    private fun pasteSetup() {
+        val clipboard = getSystemService(ClipboardManager::class.java)
+        val raw = clipboard.primaryClip?.let { if (it.itemCount > 0) it.getItemAt(0).text?.toString() else null }.orEmpty()
+        val setup = runCatching { ConnectionSetup.decode(raw) }.getOrElse {
+            toast(it.message ?: "Use Copy setup on the first phone")
+            return
+        }
+        // Parse and validate everything before changing any setting. Keep this phone's role.
+        pairInput.setText(setup.pairCode)
+        relayUrlInput.setText(setup.relayUrl)
+        relayTokenInput.setText(setup.privateKey)
+        if (setup.transport == Prefs.RECEIVER_STABLE) compatibilityRadio.isChecked = true else pushRadio.isChecked = true
+        if (saveSettings(false)) toast("Setup imported. Choose this phone's role, then start.")
+    }
+
+    private fun copyText(label: String, value: String, sensitive: Boolean = false) {
+        val clip = ClipData.newPlainText(label, value)
+        if (sensitive) clip.description.extras = PersistableBundle().apply {
+            putBoolean("android.content.extra.IS_SENSITIVE", true)
+        }
+        getSystemService(ClipboardManager::class.java).setPrimaryClip(clip)
+        if (Build.VERSION.SDK_INT < 33) toast("Copied")
+    }
+
+    private fun renderRelayCheck() {
+        if (!::relayCheckStatus.isInitialized || !::relayCheckDetails.isInitialized) return
+        relayCheckStatus.text = Diagnostics.lastRelaySummary(this)
+        relayCheckDetails.isEnabled = Diagnostics.lastRelayCheck(this).isNotBlank()
+    }
+
+    private fun showRelayReport() {
+        val report = Diagnostics.lastRelayCheck(this)
+        if (report.isBlank()) return
+        val content = TextView(this).apply {
+            text = report
+            textSize = 14f
+            setTextIsSelectable(true)
+            setPadding(dp(20), dp(12), dp(20), dp(12))
+        }
+        AlertDialog.Builder(this).setTitle("Connection report")
+            .setView(ScrollView(this).apply { addView(content) })
+            .setPositiveButton("Copy report") { _, _ -> copyText("Notification connection report", report) }
+            .setNegativeButton("Close", null).show()
     }
 
     private fun updateInfo() {
