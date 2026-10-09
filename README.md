@@ -1,4 +1,4 @@
-# Notification 1.3.0
+# Notification 1.3.1
 
 A small personal Android app for mirroring and synchronizing notifications between two phones.
 One APK supports both Sender and Receiver. Android 9 and later are supported; the build targets Android 14.
@@ -46,7 +46,7 @@ It uses Android's notification APIs and this app's own transport; no Bridge back
 - The existing durable claim/deduplication rules remain: an interrupted dispatch reports UNKNOWN
   and never automatically repeats the action. Check Sender before retrying UNKNOWN.
 
-Install 1.3.0 on both phones to use generation-checked actions and result acknowledgements.
+Install 1.3.1 on both phones to use generation-checked actions, result acknowledgements and setup transfer.
 The existing pair code, delivery choice and relay settings are preserved during signed updates.
 
 ## Two delivery choices
@@ -74,14 +74,21 @@ network aware, and use backoff with jitter. Old socket callbacks cannot reconnec
 
 ## Pair and start
 
-1. Install the same 1.3.0 APK on both phones. In-place updates of the previous CI-signed 1.0.0/1.1.0/1.1.1 builds
-   preserve settings because the existing CI debug signing key is retained. The 1.2.0 CI build is also an update source.
-2. On the first phone choose **Sender**, press **Generate**, and save the generated pair key.
-3. Copy the **exact same** pair key to the second phone, choose **Receiver**, and save.
-4. Select the same delivery mode in Advanced on both phones.
-5. On Sender enable **Notification Access** and choose the apps to forward.
+1. Install the same 1.3.1 APK on both phones. Signed updates preserve existing settings and pairing.
+2. On the first phone choose **Sender**, press **Generate pair code**, then **Save**.
+3. Open **Connection settings**, enter the Worker private key, and press **Check Worker**.
+   The existing Worker URL is filled in. For Compatibility, select that delivery choice instead.
+4. Press **Copy setup** and transfer the copied text to your second phone. It contains your pair code
+   and private key; Base64 encoding is not encryption. Paste it into that phone's clipboard, choose
+   **Receiver**, and press **Paste setup** in Notification. All connection fields are validated together.
+   The phone's role, selected apps, permissions and start/stop choice are not transferred.
+5. On Sender press **Enable notification access** and **Choose apps**.
 6. On Receiver allow notification permission and press **Start**.
-7. Send Test, then test a real notification. Use **Sync now** to request current state.
+7. Press **Send Test** on Sender, then test a real notification. Use **Sync now** to request current state.
+
+Already paired? Keep the current pair code and private key. Copy/Paste setup is optional;
+manual entry is still supported. Connection settings open automatically while Push setup is incomplete.
+**Check Worker** can run before generating a pair code or starting either phone.
 
 Generate creates a random six-digit pair code from 100000 to 999999 using `SecureRandom`.
 Existing 32-character pair keys remain supported, so previously paired phones can keep their key.
@@ -98,7 +105,7 @@ the app, and differs from swiping it out of Recents.
 
 Worker source: `relay/src/index.js`. The Worker name in `relay/wrangler.jsonc` is `notification`.
 The existing default Android Relay URL is `https://notification.mhdvi45.workers.dev`; if deploying
-to another account, set the actual HTTPS Worker URL in Advanced on both phones.
+to another account, set the actual HTTPS Worker URL in Connection settings on both phones.
 
 Enable the Firebase Cloud Messaging HTTP v1 API for the Firebase project used by
 `app/google-services.json`. Create a service account authorized to send FCM messages for that project.
@@ -113,8 +120,8 @@ npx wrangler secret put RELAY_TOKEN
 npm run deploy
 ```
 
-`RELAY_TOKEN` must be a private random value of at least 24 characters. Store the same token in
-Advanced → Private key on both phones. `/health` reports a version and whether service-account
+`RELAY_TOKEN` must be a private random value of at least 24 printable ASCII characters. Store the same token in
+Connection settings → Private key on both phones. `/health` reports a version and whether service-account
 configuration is present; it does not validate Google permissions or guarantee FCM delivery.
 
 Worker 1.3.0 responds at the base URL with service/version information. An older Worker
@@ -122,18 +129,33 @@ may return `{"error":"not_found"}` there; that alone does not mean it is broken.
 Check `https://notification.mhdvi45.workers.dev/health`, then **Send Test** in Push mode on the phones.
 Keep the Android Relay URL set to the base URL without `/health` or `/v1/send`; the app adds
 `/v1/send` itself. The Android app also normalizes pasted `/health`, `/v1/send` and
-`/v1/check` URLs to the correct base, and reports invalid HTTPS URLs before saving. An older deployed Worker may report only `{"ok":true}` at `/health`. The configured default
-returned that response on 2026-10-09; this does not establish working Firebase delivery.
+`/v1/check` URLs to the correct base, and reports invalid HTTPS URLs before saving.
+On 2026-10-09 the configured default returned HTTP 200 with `ok: true`, `configured: true`,
+`relayConfigured: true` and `version: "1.3.0"`. This does not establish working Firebase delivery.
 
-In Advanced, **Check Worker** checks reachability, private-key authorization and the Firebase
+In Connection settings, **Check Worker** checks reachability, private-key authorization and the Firebase
 project against the APK. It calls authenticated `POST /v1/check`, which uses FCM `validate_only`
 to verify sending permission **without delivering a notification**. A reachable older deployment
 asks you to deploy Worker 1.3.0. **Send Test** is still required to verify the second phone/topic.
 See [relay/README.md](relay/README.md) for deployment and interpreting errors.
 
+Version 1.3.1 shows a short result with **Details / copy report** for troubleshooting. The report
+preserves successful `/health` status and identifies which `/v1/check` stage failed: HTTPS connection,
+request write, response wait or body read. DNS failures, TLS verification failures, timeouts, HTTP
+errors, redirects and non-JSON challenge pages have distinct messages. Authorization is redacted;
+request bodies, private keys and raw exception messages are never written to these reports or logs.
+Saved reports are cleared when the Worker URL/private key changes. Clipboard setup is marked sensitive;
+clipboard contents are read only after pressing **Paste setup**. Platform TLS verification stays enabled.
+
+The 1.3.0 Android request already used POST, the correct endpoint, a trimmed Bearer token and the APK's
+Firebase project ID. Its blanket exception handler hid the phone-specific cause under "Worker unreachable".
+Browser health success alone does not verify the app's HTTPS connection or the authenticated FCM check.
+The precise cause on an affected phone requires the new diagnostic report; no cause is inferred from health alone.
+
 Android normalizes wire message IDs (including `result:command-id` acknowledgements) to the
 Worker's allowed format. The encrypted command ID is preserved for matching results. Push requests
-include the APK's Firebase project ID and allow up to 20 seconds for a cold OAuth/FCM request;
+include the APK's Firebase project ID and allow up to 40 seconds for a cold OAuth/FCM request,
+including the Worker's single expired-token retry. Delivery and diagnostics share the same request builder;
 Compatibility retains its 4-second read timeout. No periodic health polling was added.
 
 The Worker validates body size, topic direction, ciphertext and FCM's 2 KiB topic data limit.
@@ -187,7 +209,8 @@ node --test relay/test/relay.test.js
 
 GitHub Actions restores the stable CI debug signature, tests Android sync/crypto, action-selection, generation, acknowledgement and bounded-queue rules and Worker
 behavior, runs Android lint, builds the signed release APK with R8 obfuscation/resource shrinking,
-and uploads it as `Notification-1.3.0-optimized-apk`. CI verifies that the obfuscation mapping exists
+and uploads it as `Notification-1.3.1-optimized-apk`. Tests also exercise the real HTTP method/header/body builder,
+redacted failure stages and setup validation, including a loopback HTTP wire check. CI verifies that the obfuscation mapping exists
 and reports the APK byte size and SHA-256.
 The extra JUnit/JSON dependencies are test-only and are not included in the APK.
 
@@ -206,5 +229,5 @@ merging, test on both real phones in both delivery modes:
 7. Interrupt the process around dispatch: UNKNOWN must never trigger automatic reply replay.
 8. Oversized Persian/emoji replies must show an error without sending a shortened message.
 
-Existing draft PRs #1–#4 are unchanged. This work targets `agent/bridge-reliability-v1.2`. Keep this work in a separate draft PR until real-device
+Existing draft PRs #1–#5 are unchanged. This update targets `agent/complete-notification-actions-v1.3`. Keep this work in a separate draft PR until real-device
 and deployed-Worker validation are complete; do not merge to main without the user's approval.

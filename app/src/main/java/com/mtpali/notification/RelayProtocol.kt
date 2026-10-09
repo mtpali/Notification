@@ -21,6 +21,12 @@ object RelayProtocol {
     fun messageId(id: String): String = if (id.matches(Regex("[A-Za-z0-9_-]{1,128}"))) id
         else NotificationReference.hash(id)
 
+    fun privateKeyError(value: String): String = when {
+        value.trim().length < 24 -> "Worker private key must contain at least 24 characters"
+        value.trim().any { it.code !in 32..126 } -> "Worker private key contains unsupported characters; use ASCII letters, digits or symbols"
+        else -> ""
+    }
+
     fun error(status: Int, code: String): String = when (code) {
         "unauthorized" -> "Worker private key rejected"
         "relay_not_configured" -> "Worker Firebase secret is missing or invalid"

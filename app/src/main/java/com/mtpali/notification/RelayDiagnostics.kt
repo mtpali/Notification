@@ -2,64 +2,61 @@ package com.mtpali.notification
 
 import java.net.HttpURLConnection
 import java.net.URL
-import java.io.InputStream
-import java.io.ByteArrayOutputStream
 import java.util.concurrent.Executors
 import org.json.JSONObject
 
 object RelayDiagnostics {
     private val executor = Executors.newSingleThreadExecutor()
-    fun check(baseUrl: String, token: String, projectId: String, completed: (String) -> Unit) {
-        executor.execute {
-            val result = try {
-                val base = RelayProtocol.baseUrl(baseUrl)
-                val health = request("$base/health")
-                if (health.first != 200) RelayProtocol.error(health.first, health.second.optString("error"))
-                else {
-                    val checked = request("$base/v1/check", token, projectId)
-                    when {
-                        checked.first == 404 -> "Worker reachable, but diagnostic endpoint is missing. Deploy Worker 1.3.0."
-                        checked.first in 200..299 && checked.second.optBoolean("ok") ->
-                            "Worker, private key and Firebase sending permission verified. Use Send Test to check the second phone."
-                        else -> RelayProtocol.error(checked.first, checked.second.optString("error"))
-                    }
-                }
-            } catch (_: Exception) { "Worker unreachable; check Internet, HTTPS URL and Worker deployment" }
-            completed(result)
+    data class Result(val summary: String, val report: String)
+
+    fun check(baseUrl: String, token: String, projectId: String, completed: (Result) -> Unit) {
+        executor.execute { completed(runCheck(baseUrl, token, projectId)) }
+    }
+
+    /** Tests exercise the actual GET/POST/header/body builder through this connection factory. */
+    internal fun runCheck(baseUrl: String, token: String, projectId: String,
+        open: (URL) -> HttpURLConnection = { it.openConnection() as HttpURLConnection }): Result {
+        val trace = mutableListOf<String>()
+        fun result(summary: String, detail: String = summary) = Result(summary, (trace + detail).joinToString("\n"))
+        val base = runCatching { RelayProtocol.baseUrl(baseUrl) }.getOrNull()
+            ?: return result("Invalid Relay URL; use the base HTTPS Worker URL")
+        val keyError = RelayProtocol.privateKeyError(token)
+        if (keyError.isNotEmpty()) return result(keyError)
+        if (projectId.isBlank()) return result("Firebase project ID is missing in this APK")
+        return try {
+            val health = RelayHttp.request("$base/health", "GET", "/health",
+                readTimeoutMs = RelayHttp.HEALTH_TIMEOUT_MS, open = open)
+            trace.add("GET /health: HTTP ${health.status}")
+            val healthJson = parse(health.body)
+            if (health.status != 200) return result(responseError(health, healthJson))
+            if (healthJson == null || !healthJson.optBoolean("ok"))
+                return result("Unexpected health response; check the Worker URL", "Unexpected health response; expected Worker JSON with ok=true")
+            trace.add("POST /v1/check: projectId=$projectId; Authorization=Bearer [redacted]; Content-Type=application/json")
+            val checked = RelayHttp.request("$base/v1/check", "POST", "/v1/check",
+                body = JSONObject().put("projectId", projectId).toString(), token = token.trim(), open = open)
+            trace.add("POST /v1/check: HTTP ${checked.status}")
+            val checkedJson = parse(checked.body)
+            val summary = when {
+                checked.status == 404 -> "Worker reachable, but diagnostic endpoint is missing. Deploy Worker 1.3.0."
+                checked.status in 200..299 && checkedJson?.optBoolean("ok") == true ->
+                    "Connection verified ✓ Use Send Test to check the second phone."
+                checked.status in 200..299 -> "Unexpected diagnostic response; expected Worker JSON with ok=true"
+                else -> responseError(checked, checkedJson)
+            }
+            result(summary)
+        } catch (error: RelayHttp.Failure) {
+            result(error.summary(), error.report())
+        } catch (error: Exception) {
+            // Class only: exception messages may contain a header value or other private data.
+            result("Worker check could not complete; open Details", "Worker check could not complete [${error.javaClass.simpleName}]")
         }
     }
 
-    private fun request(address: String, token: String = "", projectId: String = ""): Pair<Int, JSONObject> {
-        val connection = URL(address).openConnection() as HttpURLConnection
-        try {
-            connection.instanceFollowRedirects = false
-            connection.connectTimeout = 5_000
-            connection.readTimeout = 20_000
-            if (token.isNotBlank()) {
-                connection.requestMethod = "POST"
-                connection.doOutput = true
-                connection.setRequestProperty("Authorization", "Bearer $token")
-                connection.setRequestProperty("Content-Type", "application/json")
-                connection.outputStream.use { it.write(JSONObject().put("projectId", projectId).toString().toByteArray(Charsets.UTF_8)) }
-            }
-            val status = connection.responseCode
-            val body = readBody(if (status in 200..299) connection.inputStream else connection.errorStream)
-            return status to runCatching { JSONObject(body) }.getOrDefault(JSONObject())
-        } finally { connection.disconnect() }
-    }
+    private fun parse(body: String): JSONObject? = runCatching { JSONObject(body) }.getOrNull()
 
-    // InputStream.readNBytes is not available on the Android 9 minimum SDK.
-    fun readBody(stream: InputStream?): String {
-        if (stream == null) return ""
-        return stream.use {
-            val output = ByteArrayOutputStream()
-            val buffer = ByteArray(1024)
-            while (output.size() < 8192) {
-                val count = it.read(buffer, 0, minOf(buffer.size, 8192 - output.size()))
-                if (count < 0) break
-                if (count > 0) output.write(buffer, 0, count)
-            }
-            output.toByteArray().toString(Charsets.UTF_8)
-        }
+    private fun responseError(response: RelayHttp.Response, json: JSONObject?): String = when {
+        response.status in 300..399 -> "Worker redirected HTTP ${response.status}; use the final base HTTPS URL"
+        json == null -> "HTTP ${response.status} with a non-JSON response; check Relay URL or Cloudflare Access/challenge"
+        else -> RelayProtocol.error(response.status, json.optString("error"))
     }
 }

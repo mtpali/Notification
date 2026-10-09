@@ -2,8 +2,6 @@ package com.mtpali.notification
 
 import android.content.Context
 import org.json.JSONObject
-import java.net.HttpURLConnection
-import java.net.URL
 import java.util.UUID
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
@@ -114,7 +112,6 @@ object RelayClient {
         val error: String = "", val retryAfter: Long = 0)
 
     private fun send(context: Context, message: OutboxMessage): SendResult {
-        var connection: HttpURLConnection? = null
         return try {
             val compatibility = message.transport == Prefs.RECEIVER_STABLE
             val address = if (compatibility) "https://ntfy.sh/${message.topic}" else "${message.relayUrl}/v1/send"
@@ -123,35 +120,26 @@ object RelayClient {
                 .put("id", message.id).put("priority", message.priority)
                 .put("projectId", runCatching { FirebaseApp.getInstance().options.projectId.orEmpty() }.getOrDefault(""))
                 .toString()
-            connection = URL(address).openConnection() as HttpURLConnection
-            connection.apply {
-                requestMethod = "POST"
-                instanceFollowRedirects = false
-                connectTimeout = 4_000
-                // A cold Worker may first acquire an OAuth token (8 s), then call FCM (8 s).
-                readTimeout = if (compatibility) 4_000 else 20_000
-                doOutput = true
-                setRequestProperty("User-Agent", "Notification-Android/1.3")
-                setRequestProperty("Content-Type", if (compatibility) "text/plain; charset=utf-8" else "application/json; charset=utf-8")
-                if (compatibility) setRequestProperty("Firebase", "no")
-                else setRequestProperty("Authorization", "Bearer ${Prefs.relayToken(context)}")
-            }
-            connection.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
-            val status = connection.responseCode
-            val retryAfter = connection.getHeaderField("Retry-After")?.toLongOrNull()?.coerceIn(0, 3600)?.times(1000) ?: 0
+            val response = RelayHttp.request(address, "POST", if (compatibility) "/[ntfy topic]" else "/v1/send",
+                body = body, token = if (compatibility) null else Prefs.relayToken(context),
+                contentType = if (compatibility) "text/plain; charset=utf-8" else "application/json; charset=utf-8",
+                connectTimeoutMs = if (compatibility) 4_000 else RelayHttp.CONNECT_TIMEOUT_MS,
+                readTimeoutMs = if (compatibility) 4_000 else RelayHttp.PUSH_TIMEOUT_MS,
+                headers = if (compatibility) mapOf("Firebase" to "no") else emptyMap())
+            val status = response.status
             val code = if (!compatibility && status !in 200..299) runCatching {
-                JSONObject(RelayDiagnostics.readBody(connection.errorStream)).optString("error")
+                JSONObject(response.body).optString("error")
             }.getOrNull().orEmpty() else ""
             when {
                 status in 200..299 -> SendResult(true)
                 status == 408 || status == 429 || status >= 500 -> SendResult(false, true,
-                    if (compatibility) "Send pending (HTTP $status)" else RelayProtocol.error(status, code), retryAfter)
+                    if (compatibility) "Send pending (HTTP $status)" else RelayProtocol.error(status, code), response.retryAfterMs)
                 else -> SendResult(false, false, if (compatibility) "Send rejected (HTTP $status)" else RelayProtocol.error(status, code))
             }
-        } catch (_: Exception) {
-            SendResult(false, true, "Offline or relay unreachable")
-        } finally {
-            connection?.disconnect()
+        } catch (error: RelayHttp.Failure) {
+            SendResult(false, true, error.report())
+        } catch (error: Exception) {
+            SendResult(false, true, "Send could not complete [${error.javaClass.simpleName}]")
         }
     }
 }

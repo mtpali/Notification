@@ -16,7 +16,19 @@ object Diagnostics {
     }
 
     fun error(context: Context, message: String) {
-        prefs(context).edit().putString("error", message.take(160)).apply()
+        prefs(context).edit().putString("error", message.take(512)).apply()
+    }
+
+    fun relayCheck(context: Context, result: RelayDiagnostics.Result) {
+        prefs(context).edit().putString("relay_check", result.report.take(4096))
+            .putString("relay_summary", result.summary).apply()
+    }
+
+    fun lastRelayCheck(context: Context): String = prefs(context).getString("relay_check", "").orEmpty()
+    fun lastRelaySummary(context: Context): String = prefs(context).getString("relay_summary", "").orEmpty()
+
+    fun clearRelayCheck(context: Context) {
+        prefs(context).edit().remove("relay_check").remove("relay_summary").apply()
     }
 
     fun connection(context: Context, message: String) {

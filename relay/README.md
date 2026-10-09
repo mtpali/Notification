@@ -1,7 +1,8 @@
 # Notification Worker 1.3.0
 
 Deploy this directory to the Cloudflare account that owns `notification.mhdvi45.workers.dev`.
-The default URL returned HTTP 200 with `{ "ok": true }` from `/health` on 2026-10-09.
+The default URL returned HTTP 200 with `ok: true`, `configured: true`, `relayConfigured: true`
+and `version: "1.3.0"` from `/health` on 2026-10-09.
 That proves reachability, not Firebase permission, topic subscription or phone delivery.
 
 ```sh
@@ -18,13 +19,17 @@ If both secrets already exist and are correct, keep them and only deploy the new
 used by `app/google-services.json`. Enable the Firebase Cloud Messaging HTTP v1 API and
 service-account permission to send messages. Paste the JSON into the Cloudflare secret prompt;
 never put it in this repository or APK. `RELAY_TOKEN` is a random private value of at least
-24 characters, matching Advanced → Private key on both phones.
+24 printable ASCII characters, matching Connection settings → Private key on both phones.
 
 After deploying, `/health` should report `version: "1.3.0"`, `configured: true` and
-`relayConfigured: true`. In Notification 1.3.0 on either phone, Advanced → **Check Worker**
+`relayConfigured: true`. In Notification 1.3.1 on either phone, Connection settings → **Check Worker**
 checks the private key, matching Firebase project and Google sending permission using
 `validate_only: true`; it does not send a notification. Then use **Send Test** from Sender
 and **Sync now** on Receiver to verify real delivery in both directions.
+Android 1.3.1 works with this Worker 1.3.0; this app update requires no Worker redeployment.
+If the app check fails while browser health succeeds, press **Details / copy report** to identify
+the HTTP endpoint, completed health status and failure stage/type. The report excludes private keys
+and raw exception messages. **Copy setup / Paste setup** transfers connection settings between phones.
 
 | Result | Next action |
 | --- | --- |
