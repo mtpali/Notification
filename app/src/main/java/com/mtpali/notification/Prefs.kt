@@ -88,10 +88,12 @@ object Prefs {
     }
 
     fun relayUrl(context: Context): String =
-        prefs(context).getString(KEY_RELAY_URL, DEFAULT_RELAY_URL) ?: DEFAULT_RELAY_URL
+        (prefs(context).getString(KEY_RELAY_URL, DEFAULT_RELAY_URL) ?: DEFAULT_RELAY_URL).let {
+            runCatching { RelayProtocol.baseUrl(it) }.getOrDefault(it)
+        }
 
     fun setRelayUrl(context: Context, value: String) {
-        val normalized = value.trim().ifBlank { DEFAULT_RELAY_URL }
+        val normalized = RelayProtocol.baseUrl(value.trim().ifBlank { DEFAULT_RELAY_URL })
         prefs(context).edit().putString(KEY_RELAY_URL, normalized).apply()
     }
 

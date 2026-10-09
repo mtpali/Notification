@@ -5,7 +5,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 data class ActionRecord(val id: String, val type: String, val tag: String, val generation: String,
-    val state: String = "QUEUED", val createdAt: Long = System.currentTimeMillis())
+    val state: String = "QUEUED", val createdAt: Long = System.currentTimeMillis(), val title: String = "")
 
 /** No reply text is stored here. Late results cannot complete another action or change its target. */
 class ActionLedger(raw: String = "") {
@@ -15,14 +15,14 @@ class ActionLedger(raw: String = "") {
         for (index in 0 until list.length()) runCatching {
             val r = list.getJSONObject(index)
             val row = ActionRecord(r.getString("id"), r.getString("type"), r.getString("tag"),
-                r.getString("generation"), r.getString("state"), r.getLong("time"))
+                r.getString("generation"), r.getString("state"), r.getLong("time"), r.optString("title"))
             records[row.id] = row
         }
         trim()
     }
 
-    fun queued(command: CommandPayload, tag: String) {
-        records[command.id] = ActionRecord(command.id, command.type, tag, command.generation, createdAt = command.createdAt)
+    fun queued(command: CommandPayload, tag: String, title: String = "") {
+        records[command.id] = ActionRecord(command.id, command.type, tag, command.generation, createdAt = command.createdAt, title = title)
         trim()
     }
 
@@ -46,7 +46,7 @@ class ActionLedger(raw: String = "") {
     fun latest(): ActionRecord? = records.values.lastOrNull()
     fun toJson(): String = JSONArray(records.values.map {
         JSONObject().put("id", it.id).put("type", it.type).put("tag", it.tag)
-            .put("generation", it.generation).put("state", it.state).put("time", it.createdAt)
+            .put("generation", it.generation).put("state", it.state).put("time", it.createdAt).put("title", it.title)
     }).toString()
     private fun trim() { while (records.size > 64) records.remove(records.keys.first()) }
 }
@@ -58,9 +58,9 @@ object ActionResults {
         prefs(context).edit().putString("ledger", ledger.toJson()).commit()
 
     @Synchronized
-    fun enqueue(context: Context, command: CommandPayload, tag: String): Boolean {
+    fun enqueue(context: Context, command: CommandPayload, tag: String, title: String = ""): Boolean {
         val ledger = read(context)
-        ledger.queued(command, tag)
+        ledger.queued(command, tag, title)
         if (!save(context, ledger)) return false
         val accepted = RelayClient.publishCommandAccepted(context, command)
         if (!accepted) { ledger.failed(command.id); save(context, ledger) }
@@ -102,7 +102,8 @@ object ActionResults {
 
     fun summary(context: Context): String {
         val row = read(context).latest() ?: return ""
-        val action = when (row.type) { CommandPayload.TYPE_REPLY -> "Reply"; CommandPayload.TYPE_MARK_READ -> "Mark as read"; else -> "Dismiss" }
+        val action = row.title.ifBlank { when (row.type) { CommandPayload.TYPE_REPLY -> "Reply";
+            CommandPayload.TYPE_MARK_READ -> "Mark as read"; CommandPayload.TYPE_ACTION -> "Action"; else -> "Dismiss" } }
         val state = if (row.state in listOf("QUEUED", "SUBMITTED") &&
             System.currentTimeMillis() - row.createdAt > CommandPayload.MAX_AGE_MS + 5 * 60_000L)
             "Result unavailable; check Sender" else label(row.state)

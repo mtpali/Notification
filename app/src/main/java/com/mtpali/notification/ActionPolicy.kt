@@ -14,16 +14,78 @@ data class ActionDescriptor(
     val freeFormKeys: List<String> = emptyList(),
     val hasIntent: Boolean = true,
     val immutable: Boolean = false,
-    val authenticationRequired: Boolean = false
+    val authenticationRequired: Boolean = false,
+    val title: String = "",
+    val inputs: List<InputDescriptor> = emptyList(),
+    val allowGeneratedReplies: Boolean = false,
+    val contextual: Boolean = false
 ) {
     fun signature(): String = NotificationReference.hash(*(listOf(origin, index.toString(), semantic.toString(),
         inputKeys.size.toString()) + inputKeys + listOf(freeFormKeys.size.toString()) + freeFormKeys +
-        listOf(hasIntent.toString(), immutable.toString(), authenticationRequired.toString())).toTypedArray())
+        listOf(hasIntent.toString(), immutable.toString(), authenticationRequired.toString(), title,
+            allowGeneratedReplies.toString(), contextual.toString()) + inputs.map { it.signature() }).toTypedArray())
+}
+
+data class InputDescriptor(val key: String, val label: String = "", val freeForm: Boolean = true,
+    val choices: List<String> = emptyList(), val dataTypes: List<String> = emptyList(), val editChoices: Int = 0) {
+    fun signature(): String = NotificationReference.hash(key, label, freeForm.toString(),
+        NotificationReference.hash(*choices.toTypedArray()), NotificationReference.hash(*dataTypes.toTypedArray()), editChoices.toString())
+    fun toJson(): JSONObject = JSONObject().put("k", key).put("l", label).put("f", freeForm)
+        .put("c", JSONArray(choices)).put("d", JSONArray(dataTypes)).put("e", editChoices)
+    companion object {
+        fun fromJson(j: JSONObject) = InputDescriptor(j.getString("k"), j.optString("l"), j.optBoolean("f", true),
+            strings(j.optJSONArray("c")), strings(j.optJSONArray("d")), j.optInt("e"))
+        private fun strings(a: JSONArray?) = if (a == null) emptyList() else (0 until a.length()).map { a.getString(it) }
+    }
+}
+
+/** The original label/order and each input are retained; IDs bind to a single source action. */
+data class MirroredAction(val id: String, val title: String, val semantic: Int = 0,
+    val inputs: List<InputDescriptor> = emptyList(), val authenticationRequired: Boolean = false,
+    val allowGeneratedReplies: Boolean = false, val unsupportedReason: String = "", val origin: String = "native") {
+    val inlineInput: Boolean get() = inputs.size == 1 && unsupportedReason.isBlank() &&
+        (inputs.single().freeForm || inputs.single().choices.isNotEmpty())
+    fun toJson(): JSONObject = JSONObject().put("id", id).put("t", title).put("s", semantic)
+        .put("i", JSONArray(inputs.map { it.toJson() })).put("a", authenticationRequired)
+        .put("g", allowGeneratedReplies).put("u", unsupportedReason).put("o", origin)
+    companion object {
+        fun fromJson(j: JSONObject): MirroredAction {
+            val inputs = j.optJSONArray("i") ?: JSONArray()
+            return MirroredAction(j.getString("id"), j.getString("t"), j.optInt("s"),
+                (0 until inputs.length()).map { InputDescriptor.fromJson(inputs.getJSONObject(it)) },
+                j.optBoolean("a"), j.optBoolean("g"), j.optString("u"), j.optString("o", "native"))
+        }
+    }
 }
 
 object ActionPolicy {
     private const val REPLY = 1
     private const val MARK_READ = 2
+
+    fun <T> complete(actions: List<Pair<ActionDescriptor, T>>, sameIntent: (T, T) -> Boolean): List<Pair<ActionDescriptor, T>> =
+        actions.filter { (descriptor, action) -> descriptor.origin == "native" ||
+            actions.none { (native, original) -> native.origin == "native" && sameIntent(original, action) &&
+                native.copy(index = descriptor.index, origin = descriptor.origin) == descriptor } }
+
+    fun mirror(generation: String, descriptor: ActionDescriptor): MirroredAction = MirroredAction(
+        NotificationReference.actionId(generation, CommandPayload.TYPE_ACTION, descriptor),
+        descriptor.title, descriptor.semantic, descriptor.inputs, descriptor.authenticationRequired,
+        descriptor.allowGeneratedReplies, unsupportedReason(descriptor), descriptor.origin)
+
+    fun unsupportedReason(action: ActionDescriptor): String = when {
+        !action.hasIntent -> "Original action has no intent"
+        action.inputs.map { it.key }.let { keys -> keys.any { it.isBlank() } || keys.distinct().size != keys.size } ->
+            "Original action has invalid input keys"
+        action.inputs.isNotEmpty() && action.immutable -> "Original input intent is immutable"
+        action.inputs.any { !it.freeForm && it.choices.isEmpty() } -> "Attachment input is not supported"
+        else -> ""
+    }
+
+    fun validResults(inputs: List<InputDescriptor>, results: Map<String, String>): Boolean =
+        results.keys == inputs.map { it.key }.toSet() && inputs.all { input ->
+            val value = results[input.key].orEmpty()
+            value.isNotBlank() && value.length <= 1000 && (input.freeForm || value in input.choices)
+        }
 
     fun reply(actions: List<ActionDescriptor>): ActionDescriptor? {
         val eligible = preferred(actions.filter {

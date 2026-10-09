@@ -38,5 +38,6 @@ object SyncRepository {
     fun clear(context: Context) {
         context.getSharedPreferences("mirror_sync", Context.MODE_PRIVATE).edit().clear().commit()
         MirrorNotifier.clear(context)
+        MirrorDelivery.clear(context)
     }
 }

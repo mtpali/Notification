@@ -36,15 +36,20 @@ object OutboxStore {
         prefs(context).edit().putString("messages", JSONArray(messages.map { it.toJson() }).toString()).commit()
 
     @Synchronized
-    fun add(context: Context, message: OutboxMessage): Boolean {
+    fun add(context: Context, message: OutboxMessage): Boolean = addAll(context, listOf(message))
+
+    /** All fragments of one update replace the previous update in one durable write. */
+    @Synchronized
+    fun addAll(context: Context, batch: List<OutboxMessage>): Boolean {
+        if (batch.isEmpty()) return false
         val messages = read(context)
         val now = System.currentTimeMillis()
         if (messages.any { it.kind == "command" && it.expiresAt <= now })
             Diagnostics.error(context, "A queued action expired; check Sender before retrying")
         messages.removeAll { it.expiresAt <= now ||
-            (message.coalesceKey.isNotBlank() && it.coalesceKey == message.coalesceKey && it.topic == message.topic) }
-        if (messages.size >= 256) return false
-        messages.add(message)
+            batch.any { next -> next.coalesceKey.isNotBlank() && it.coalesceKey == next.coalesceKey && it.topic == next.topic } }
+        if (messages.size + batch.size > 256) return false
+        messages.addAll(batch)
         return write(context, messages)
     }
 

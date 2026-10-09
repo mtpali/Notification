@@ -2,6 +2,7 @@ package com.mtpali.notification
 
 import java.util.Base64
 import org.json.JSONObject
+import org.json.JSONArray
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.security.SecureRandom
@@ -30,10 +31,11 @@ data class MirrorPayload(
     val readActionId: String = "",
     val sourceUserId: Int = -1,
     val commandId: String = "",
-    val actionStatus: String = ""
+    val actionStatus: String = "",
+    val actions: List<MirroredAction> = emptyList()
 ) {
     fun toJson(): String = JSONObject().apply {
-        put("v", 4)
+        put("v", 5)
         put("package", packageName)
         put("app", appName)
         put("title", title)
@@ -45,6 +47,7 @@ data class MirrorPayload(
         put("event", event)
         put("time", eventTime)
         put("id", eventId)
+        if (actions.isNotEmpty()) put("actions", JSONArray(actions.map { it.toJson() }))
         if (generation.isNotBlank()) put("generation", generation)
         if (replyActionId.isNotBlank()) put("replyAction", replyActionId)
         if (readActionId.isNotBlank()) put("readAction", readActionId)
@@ -88,7 +91,10 @@ data class MirrorPayload(
                 readActionId = json.optString("readAction"),
                 sourceUserId = json.optInt("user", -1),
                 commandId = json.optString("commandId"),
-                actionStatus = json.optString("actionStatus")
+                actionStatus = json.optString("actionStatus"),
+                actions = json.optJSONArray("actions")?.let { list ->
+                    (0 until list.length()).map { MirroredAction.fromJson(list.getJSONObject(it)) }
+                }.orEmpty()
             )
         }
     }
@@ -104,10 +110,11 @@ data class CommandPayload(
     val sourcePostTime: Long = 0,
     val generation: String = "",
     val actionId: String = "",
-    val sourceUserId: Int = -1
+    val sourceUserId: Int = -1,
+    val inputResults: Map<String, String> = emptyMap()
 ) {
     fun toJson(): String = JSONObject().apply {
-        put("v", 3)
+        put("v", 4)
         put("type", type)
         put("package", packageName)
         put("key", notificationKey)
@@ -118,6 +125,7 @@ data class CommandPayload(
         put("generation", generation)
         put("actionId", actionId)
         put("user", sourceUserId)
+        if (inputResults.isNotEmpty()) put("inputs", JSONObject(inputResults))
     }.toString()
 
     // A reply is user-authored: reject an oversized command rather than silently shortening it.
@@ -132,6 +140,7 @@ data class CommandPayload(
 
     companion object {
         const val TYPE_REPLY = "reply"
+        const val TYPE_ACTION = "action"
         const val TYPE_MARK_READ = "read"
         const val TYPE_DISMISS = "dismiss"
         const val TYPE_SYNC = "sync"
@@ -149,7 +158,10 @@ data class CommandPayload(
                 sourcePostTime = json.optLong("postTime"),
                 generation = json.optString("generation"),
                 actionId = json.optString("actionId"),
-                sourceUserId = json.optInt("user", -1)
+                sourceUserId = json.optInt("user", -1),
+                inputResults = json.optJSONObject("inputs")?.let { inputs ->
+                    inputs.keys().asSequence().associateWith { inputs.getString(it) }
+                }.orEmpty()
             )
         }
     }

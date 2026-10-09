@@ -1,6 +1,7 @@
 package com.mtpali.notification
 
 import android.app.KeyguardManager
+import android.app.ActivityOptions
 import android.app.Notification
 import android.app.PendingIntent
 import android.app.RemoteInput
@@ -19,6 +20,10 @@ object ReplyCore {
         val read = ActionPolicy.markRead(actions.map { it.first })
         val replyId = NotificationReference.actionId(generation, CommandPayload.TYPE_REPLY, reply)
         val readId = NotificationReference.actionId(generation, CommandPayload.TYPE_MARK_READ, read)
+        // Wearable copies of the same PendingIntent/metadata are redundant. Distinct intents,
+        // even with equal labels, must remain separate. Native order always comes first.
+        val all = ActionPolicy.complete(actions) { original, action -> original.actionIntent == action.actionIntent }
+        val mirroredActions = all.map { (descriptor, _) -> ActionPolicy.mirror(generation, descriptor) }
     }
 
     fun snapshot(sbn: StatusBarNotification): Snapshot {
@@ -34,7 +39,12 @@ object ReplyCore {
                     inputs.map { it.resultKey }, inputs.filter { it.allowFreeFormInput }.map { it.resultKey },
                     action.actionIntent != null,
                     Build.VERSION.SDK_INT >= 31 && action.actionIntent?.isImmutable == true,
-                    Build.VERSION.SDK_INT >= 31 && action.isAuthenticationRequired) to action)
+                    Build.VERSION.SDK_INT >= 31 && action.isAuthenticationRequired,
+                    action.title?.toString().orEmpty(), inputs.map { input -> InputDescriptor(input.resultKey,
+                        input.label?.toString().orEmpty(), input.allowFreeFormInput,
+                        input.choices.orEmpty().map { it.toString() }, input.allowedDataTypes.sorted(),
+                        if (Build.VERSION.SDK_INT >= 29) input.editChoicesBeforeSending else 0) },
+                    action.allowGeneratedReplies, Build.VERSION.SDK_INT >= 29 && action.isContextual) to action)
             }
         }
         add("native", notification.actions.orEmpty().toList())
@@ -44,7 +54,9 @@ object ReplyCore {
         val generation = NotificationReference.hash(sbn.packageName, sbn.key, sbn.postTime.toString(),
             userId.toString(), title, text, notification.`when`.toString(), notification.shortcutId.orEmpty(),
             notification.extras.getCharSequence(Notification.EXTRA_CONVERSATION_TITLE)?.toString().orEmpty(),
-            actions.joinToString("\u0000") { it.first.signature() })
+            actions.joinToString("\u0000") { (descriptor, action) ->
+                // Bind a replacement PendingIntent even if its label/content stayed identical.
+                NotificationReference.hash(descriptor.signature(), action.actionIntent?.hashCode()?.toString().orEmpty()) })
         return Snapshot(generation, title, text, userId, actions)
     }
 
@@ -60,6 +72,8 @@ object ReplyCore {
             command.packageName != current.packageName || command.notificationKey != current.key)
             return DispatchStatus.STALE
         val descriptor = when (command.type) {
+            CommandPayload.TYPE_ACTION -> snapshot.all.firstOrNull { (candidate, _) ->
+                command.actionId == NotificationReference.actionId(snapshot.generation, command.type, candidate) }?.first
             CommandPayload.TYPE_REPLY -> snapshot.reply
             CommandPayload.TYPE_MARK_READ -> snapshot.read
             else -> null
@@ -68,18 +82,28 @@ object ReplyCore {
             return DispatchStatus.STALE
         val action = snapshot.actions.first { it.first == descriptor }.second
         val pending = action.actionIntent ?: return DispatchStatus.UNSUPPORTED
-        if (Build.VERSION.SDK_INT >= 31 && action.isAuthenticationRequired &&
+        if (command.type == CommandPayload.TYPE_ACTION && ActionPolicy.unsupportedReason(descriptor).isNotBlank())
+            return DispatchStatus.UNSUPPORTED
+        if (Build.VERSION.SDK_INT >= 31 && (action.isAuthenticationRequired || pending.isActivity) &&
             context.getSystemService(KeyguardManager::class.java).isDeviceLocked)
             return DispatchStatus.NEEDS_UNLOCK
         val fillIn = Intent()
-        if (command.type == CommandPayload.TYPE_REPLY) {
-            val inputs = action.remoteInputs ?: return DispatchStatus.UNSUPPORTED
-            val results = Bundle().apply { putCharSequence(descriptor.inputKeys.single(), command.text) }
-            RemoteInput.addResultsToIntent(inputs, fillIn, results)
-            RemoteInput.setResultsSource(fillIn, RemoteInput.SOURCE_FREE_FORM_INPUT)
+        if (command.type == CommandPayload.TYPE_ACTION || command.type == CommandPayload.TYPE_REPLY) {
+            val values = if (command.type == CommandPayload.TYPE_REPLY)
+                mapOf(descriptor.inputKeys.single() to command.text) else command.inputResults
+            if (!ActionPolicy.validResults(descriptor.inputs, values)) return DispatchStatus.INVALID_TEXT
+            if (values.isNotEmpty()) {
+                val inputs = action.remoteInputs ?: return DispatchStatus.UNSUPPORTED
+                val results = Bundle().apply { values.forEach { (key, value) -> putCharSequence(key, value) } }
+                RemoteInput.addResultsToIntent(inputs, fillIn, results)
+                RemoteInput.setResultsSource(fillIn, RemoteInput.SOURCE_FREE_FORM_INPUT)
+            }
         }
         return try {
-            pending.send(context, 0, fillIn)
+            val options = if (Build.VERSION.SDK_INT >= 34) ActivityOptions.makeBasic()
+                .setPendingIntentBackgroundActivityStartMode(ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED)
+                .toBundle() else null
+            pending.send(context, 0, fillIn, null, null, null, options)
             DispatchStatus.DISPATCHED
         } catch (_: PendingIntent.CanceledException) {
             DispatchStatus.CANCELLED

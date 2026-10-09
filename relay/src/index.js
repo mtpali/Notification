@@ -1,4 +1,6 @@
 const encoder = new TextEncoder();
+const VERSION = "1.3.0";
+class RelayFailure extends Error {}
 let cachedAccessToken = "";
 let cachedAccessTokenUntil = 0;
 let cachedAccount = "";
@@ -8,9 +10,13 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     if (request.method === "GET" && url.pathname === "/health") {
-      return json({ ok: true, configured: Boolean(readAccount(env)), version: "1.1.0" }, 200);
+      return json({ ok: true, configured: Boolean(readAccount(env)),
+        relayConfigured: (env.RELAY_TOKEN || "").length >= 24, version: VERSION }, 200);
     }
-    if (request.method !== "POST" || url.pathname !== "/v1/send") return json({ error: "not_found" }, 404);
+    if (request.method === "GET" && url.pathname === "/")
+      return json({ service: "Notification relay", version: VERSION, health: "/health" }, 200);
+    const checking = url.pathname === "/v1/check";
+    if (request.method !== "POST" || (!checking && url.pathname !== "/v1/send")) return json({ error: "not_found" }, 404);
     const expected = env.RELAY_TOKEN || "";
     if (expected.length < 24 || request.headers.get("Authorization") !== `Bearer ${expected}`) {
       return json({ error: "unauthorized" }, 401);
@@ -22,6 +28,16 @@ export default {
     try { body = JSON.parse(await limitedBody(request)); }
     catch (error) { return json({ error: error.message === "body_too_large" ? "body_too_large" : "invalid_json" }, error.message === "body_too_large" ? 413 : 400); }
     if (!body || typeof body !== "object" || Array.isArray(body)) return json({ error: "invalid_json" }, 400);
+
+    if (checking) {
+      const account = readAccount(env);
+      if (!account) return json({ error: "relay_not_configured" }, 503, 60);
+      if (typeof body.projectId !== "string" || !body.projectId || body.projectId !== account.project_id)
+        return json({ error: "firebase_project_mismatch" }, 409);
+      // FCM validates IAM/API/project configuration without delivering anything to a phone.
+      return forward(account, "notification-diagnostic-check", { kind: "mirror", payload: "diagnostic", id: "check" },
+        "normal", "check", true);
+    }
 
     const { topic, kind, payload } = body;
     const id = body.id === undefined ? crypto.randomUUID() : body.id;
@@ -37,28 +53,36 @@ export default {
     if (encoder.encode(JSON.stringify(data)).length > 2048) return json({ error: "payload_too_large" }, 413);
     const account = readAccount(env);
     if (!account) return json({ error: "relay_not_configured" }, 503, 60);
-    try {
-      let accessToken = await getAccessToken(account);
-      let response = await sendFcm(account.project_id, accessToken, topic, data, priority);
-      if (response.status === 401) {
-        cachedAccessToken = "";
-        cachedAccessTokenUntil = 0;
-        accessToken = await getAccessToken(account);
-        response = await sendFcm(account.project_id, accessToken, topic, data, priority);
-      }
-      if (!response.ok) {
-        // Never log credentials, notification data or Google's response body.
-        console.error("FCM status", response.status);
-        if (response.status === 400) return json({ error: "fcm_invalid_payload" }, 400);
-        const retry = retrySeconds(response.headers.get("Retry-After"));
-        return json({ error: "fcm_unavailable", status: response.status }, response.status === 429 ? 429 : 503, retry);
-      }
-      return json({ ok: true, id }, 200);
-    } catch {
-      return json({ error: "relay_unavailable" }, 503, 60);
-    }
+    if (body.projectId !== undefined && (typeof body.projectId !== "string" || body.projectId !== account.project_id))
+      return json({ error: "firebase_project_mismatch" }, 409);
+    return forward(account, topic, data, priority, id);
+
   },
 };
+
+async function forward(account, topic, data, priority, id, validateOnly = false) {
+  try {
+    let accessToken = await getAccessToken(account);
+    let response = await sendFcm(account.project_id, accessToken, topic, data, priority, validateOnly);
+    if (response.status === 401) {
+      cachedAccessToken = "";
+      cachedAccessTokenUntil = 0;
+      accessToken = await getAccessToken(account);
+      response = await sendFcm(account.project_id, accessToken, topic, data, priority, validateOnly);
+    }
+    if (!response.ok) {
+      // Only status, never Google's response body or notification/credential data.
+      console.error("FCM status", response.status);
+      if (response.status === 400) return json({ error: "fcm_invalid_payload" }, 400);
+      if (response.status === 403) return json({ error: "fcm_permission_denied" }, 503, 300);
+      return json({ error: "fcm_unavailable", status: response.status },
+        response.status === 429 ? 429 : 503, retrySeconds(response.headers.get("Retry-After")));
+    }
+    return json(validateOnly ? { ok: true, version: VERSION, firebase: "verified" } : { ok: true, id }, 200);
+  } catch (error) {
+    return json({ error: error instanceof RelayFailure ? error.message : "relay_unavailable" }, 503, 60);
+  }
+}
 
 function readAccount(env) {
   try {
@@ -91,12 +115,12 @@ async function limitedBody(request) {
   return new TextDecoder().decode(bytes);
 }
 
-function sendFcm(projectId, accessToken, topic, data, priority) {
+function sendFcm(projectId, accessToken, topic, data, priority, validateOnly = false) {
   return fetch(`https://fcm.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/messages:send`, {
     method: "POST",
     signal: AbortSignal.timeout(8000),
     headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json; charset=utf-8" },
-    body: JSON.stringify({ message: { topic, data, android: { priority, ttl: "300s" } } }),
+    body: JSON.stringify({ ...(validateOnly ? { validate_only: true } : {}), message: { topic, data, android: { priority, ttl: "300s" } } }),
   });
 }
 
@@ -125,7 +149,7 @@ async function acquireToken(account, now) {
     body: new URLSearchParams({ grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
       assertion: `${unsigned}.${base64UrlBytes(new Uint8Array(signature))}` }),
   });
-  if (!response.ok) throw new Error("oauth_failed");
+  if (!response.ok) throw new RelayFailure("oauth_rejected");
   const token = await response.json();
   if (typeof token.access_token !== "string" || !token.access_token) throw new Error("oauth_missing_token");
   const lifetime = Number(token.expires_in || 3600);

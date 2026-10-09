@@ -8,6 +8,7 @@ import java.util.UUID
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.random.Random
+import com.google.firebase.FirebaseApp
 
 object RelayClient {
     private val executor = Executors.newSingleThreadExecutor()
@@ -20,7 +21,7 @@ object RelayClient {
     }
 
     fun publishAccepted(context: Context, payload: MirrorPayload): Boolean =
-        enqueue(context, "mirror", payload.toTransportJsonSafe(), payload.eventId,
+        enqueue(context, "mirror", runCatching { MirrorWire.encode(payload) }.getOrNull(), payload.eventId,
             if (payload.event in setOf(MirrorPayload.EVENT_UPSERT, MirrorPayload.EVENT_REMOVE) &&
                 payload.snapshotId.isBlank() && payload.notificationKey.isNotBlank())
                 "${payload.packageName}:${payload.notificationKey}" else "", 60 * 60_000L,
@@ -33,7 +34,7 @@ object RelayClient {
 
     fun publishCommandAccepted(context: Context, payload: CommandPayload): Boolean {
         val raw = runCatching { payload.toTransportJson() }.getOrNull()
-        return enqueue(context, "command", raw, payload.id, "", CommandPayload.MAX_AGE_MS)
+        return enqueue(context, "command", raw?.let { listOf(it) }, payload.id, "", CommandPayload.MAX_AGE_MS)
     }
 
     fun requestSync(context: Context) {
@@ -42,25 +43,28 @@ object RelayClient {
         }
     }
 
-    private fun MirrorPayload.toTransportJsonSafe(): String? = runCatching { toTransportJson() }.getOrNull()
-
-    private fun enqueue(context: Context, kind: String, plaintext: String?, id: String,
+    private fun enqueue(context: Context, kind: String, plaintext: List<String>?, id: String,
         coalesceKey: String, lifetime: Long, priority: String = "normal"): Boolean {
         val app = context.applicationContext
         val pairCode = Prefs.pairCode(app)
-        if (plaintext == null || !CryptoBox.isValidPairCode(pairCode)) return false
+        if (plaintext == null || plaintext.isEmpty() || !CryptoBox.isValidPairCode(pairCode)) {
+            Diagnostics.error(app, "Notification or action exceeds the transport limit")
+            return false
+        }
         val transport = Prefs.receiverTransport(app)
         if (transport == Prefs.RECEIVER_PUSH && !Prefs.relayConfigured(app)) {
             Diagnostics.error(app, "Set Relay URL and private key")
             return false
         }
-        val encrypted = runCatching { CryptoBox.encrypt(pairCode, plaintext) }.getOrNull() ?: return false
-        if (encrypted.length > PayloadBudget.MAX_ENCRYPTED_BYTES) return false
-        val message = OutboxMessage(id.ifBlank { UUID.randomUUID().toString() },
+        val wireId = RelayProtocol.messageId(id.ifBlank { UUID.randomUUID().toString() })
+        val encrypted = runCatching { plaintext.map { CryptoBox.encrypt(pairCode, it) } }.getOrNull() ?: return false
+        if (encrypted.any { it.length > PayloadBudget.MAX_ENCRYPTED_BYTES }) return false
+        val messages = encrypted.mapIndexed { index, body -> OutboxMessage(
+            if (encrypted.size == 1) wireId else "${NotificationReference.hash(wireId)}_$index",
             if (kind == "command") CryptoBox.commandTopic(pairCode) else CryptoBox.topic(pairCode),
-            kind, encrypted, transport, Prefs.mode(app), Prefs.relayUrl(app).trimEnd('/'),
-            System.currentTimeMillis() + lifetime, coalesceKey, priority = priority)
-        if (!OutboxStore.add(app, message)) {
+            kind, body, transport, Prefs.mode(app), Prefs.relayUrl(app).trimEnd('/'),
+            System.currentTimeMillis() + lifetime, coalesceKey, priority = priority) }
+        if (!OutboxStore.addAll(app, messages)) {
             Diagnostics.error(app, "Send queue is full")
             return false
         }
@@ -116,15 +120,18 @@ object RelayClient {
             val address = if (compatibility) "https://ntfy.sh/${message.topic}" else "${message.relayUrl}/v1/send"
             val body = if (compatibility) message.payload else JSONObject()
                 .put("topic", message.topic).put("kind", message.kind).put("payload", message.payload)
-                .put("id", message.id).put("priority", message.priority).toString()
+                .put("id", message.id).put("priority", message.priority)
+                .put("projectId", runCatching { FirebaseApp.getInstance().options.projectId.orEmpty() }.getOrDefault(""))
+                .toString()
             connection = URL(address).openConnection() as HttpURLConnection
             connection.apply {
                 requestMethod = "POST"
                 instanceFollowRedirects = false
                 connectTimeout = 4_000
-                readTimeout = 4_000
+                // A cold Worker may first acquire an OAuth token (8 s), then call FCM (8 s).
+                readTimeout = if (compatibility) 4_000 else 20_000
                 doOutput = true
-                setRequestProperty("User-Agent", "Notification-Android/1.1")
+                setRequestProperty("User-Agent", "Notification-Android/1.3")
                 setRequestProperty("Content-Type", if (compatibility) "text/plain; charset=utf-8" else "application/json; charset=utf-8")
                 if (compatibility) setRequestProperty("Firebase", "no")
                 else setRequestProperty("Authorization", "Bearer ${Prefs.relayToken(context)}")
@@ -132,11 +139,14 @@ object RelayClient {
             connection.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
             val status = connection.responseCode
             val retryAfter = connection.getHeaderField("Retry-After")?.toLongOrNull()?.coerceIn(0, 3600)?.times(1000) ?: 0
+            val code = if (!compatibility && status !in 200..299) runCatching {
+                JSONObject(RelayDiagnostics.readBody(connection.errorStream)).optString("error")
+            }.getOrNull().orEmpty() else ""
             when {
                 status in 200..299 -> SendResult(true)
-                status == 408 || status == 429 || status >= 500 -> SendResult(false, true, "Send pending (HTTP $status)", retryAfter)
-                status == 401 || status == 403 -> SendResult(false, false, "Relay private key rejected")
-                else -> SendResult(false, false, "Send rejected (HTTP $status)")
+                status == 408 || status == 429 || status >= 500 -> SendResult(false, true,
+                    if (compatibility) "Send pending (HTTP $status)" else RelayProtocol.error(status, code), retryAfter)
+                else -> SendResult(false, false, if (compatibility) "Send rejected (HTTP $status)" else RelayProtocol.error(status, code))
             }
         } catch (_: Exception) {
             SendResult(false, true, "Offline or relay unreachable")

@@ -26,7 +26,7 @@ async function account() {
 test("health exposes readiness without exposing settings", async () => {
   const w = await worker();
   const response = await w.fetch(new Request("https://relay.example/health"), env);
-  assert.deepEqual(await response.json(), { ok: true, configured: false, version: "1.1.0" });
+  assert.deepEqual(await response.json(), { ok: true, configured: false, relayConfigured: true, version: "1.3.0" });
 });
 test("authentication is required before parsing the request", async () => {
   const response = await (await worker()).fetch(request(validBody, { Authorization: "Bearer wrong" }), env);
@@ -97,4 +97,76 @@ test("stale OAuth token refreshes once on FCM unauthorized", async t => {
   assert.equal((await (await worker()).fetch(request(validBody), await account())).status, 200);
   assert.equal(oauth, 2);
   assert.equal(fcm, 2);
+});
+
+function checkRequest(projectId, authorization = `Bearer ${relayToken}`) {
+  return new Request("https://relay.example/v1/check", { method: "POST", headers: {
+    Authorization: authorization, "Content-Type": "application/json",
+  }, body: JSON.stringify({ projectId }) });
+}
+
+test("opening the Worker base URL explains its service without claiming delivery", async () => {
+  const response = await (await worker()).fetch(new Request("https://relay.example/"), env);
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { service: "Notification relay", version: "1.3.0", health: "/health" });
+});
+
+test("diagnostic endpoint requires the private key and a configured Firebase account", async () => {
+  const w = await worker();
+  assert.equal((await w.fetch(checkRequest("test-project", "Bearer wrong"), env)).status, 401);
+  const unavailable = await w.fetch(checkRequest("test-project"), env);
+  assert.equal(unavailable.status, 503);
+  assert.equal((await unavailable.json()).error, "relay_not_configured");
+});
+
+test("diagnostic detects a Firebase project mismatch before contacting Google", async t => {
+  const previous = globalThis.fetch;
+  t.after(() => { globalThis.fetch = previous; });
+  globalThis.fetch = () => { throw new Error("must not call Google for mismatched project"); };
+  const response = await (await worker()).fetch(checkRequest("different-project"), await account());
+  assert.equal(response.status, 409);
+  assert.equal((await response.json()).error, "firebase_project_mismatch");
+});
+
+test("diagnostic checks FCM permission with validate_only and never delivers a notification", async t => {
+  const previous = globalThis.fetch;
+  t.after(() => { globalThis.fetch = previous; });
+  let sent;
+  globalThis.fetch = async (url, options) => {
+    if (String(url).includes("oauth2")) return Response.json({ access_token: "fake-token", expires_in: 3600 });
+    sent = JSON.parse(options.body);
+    return Response.json({ name: "validated" });
+  };
+  const response = await (await worker()).fetch(checkRequest("test-project"), await account());
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).firebase, "verified");
+  assert.equal(sent.validate_only, true);
+  assert.equal(sent.message.topic, "notification-diagnostic-check");
+  assert.equal(sent.message.android.priority, "normal");
+  assert.ok(!("notification" in sent.message));
+});
+
+test("Google service-account and FCM permission failures have distinct safe errors", async t => {
+  const previous = globalThis.fetch;
+  t.after(() => { globalThis.fetch = previous; });
+  const configured = await account();
+  globalThis.fetch = async () => new Response("private Google error must never escape", { status: 400 });
+  const oauth = await (await worker()).fetch(checkRequest("test-project"), configured);
+  assert.deepEqual(await oauth.json(), { error: "oauth_rejected" });
+  globalThis.fetch = async url => String(url).includes("oauth2") ? Response.json({ access_token: "fake", expires_in: 3600 })
+    : new Response("private credentials must never escape", { status: 403 });
+  const fcm = await (await worker()).fetch(checkRequest("test-project"), configured);
+  assert.equal(fcm.status, 503);
+  assert.deepEqual(await fcm.json(), { error: "fcm_permission_denied" });
+});
+
+test("send endpoint accepts the normalized acknowledgement ID used by Android", async t => {
+  const previous = globalThis.fetch;
+  t.after(() => { globalThis.fetch = previous; });
+  globalThis.fetch = async url => String(url).includes("oauth2") ? Response.json({ access_token: "fake", expires_in: 3600 })
+    : Response.json({ name: "sent" });
+  const configured = await account();
+  const w = await worker();
+  assert.equal((await w.fetch(request({ ...validBody, id: "result:command-id" }), configured)).status, 400);
+  assert.equal((await w.fetch(request({ ...validBody, id: "0a72fe01c0ffcd817235b1322d98f091" }), configured)).status, 200);
 });
