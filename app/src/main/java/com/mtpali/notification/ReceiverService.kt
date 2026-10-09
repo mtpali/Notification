@@ -225,7 +225,7 @@ class ReceiverService : Service() {
                     if (running && epoch == receiveEpoch) { disconnect(); scheduleReconnect() }
                 }
             } else {
-                accepted = SyncRepository.receive(this, MirrorPayload.fromJson(raw), id)
+                accepted = MirrorDelivery.receive(this, pairCode, envelope.getString("message"), id)
             }
             if (accepted) handler.post {
                 if (running && epoch == receiveEpoch && pairCode == Prefs.pairCode(this)) {

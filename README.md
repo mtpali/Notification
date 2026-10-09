@@ -1,4 +1,4 @@
-# Notification 1.2.0
+# Notification 1.3.0
 
 A small personal Android app for mirroring and synchronizing notifications between two phones.
 One APK supports both Sender and Receiver. Android 9 and later are supported; the build targets Android 14.
@@ -8,7 +8,7 @@ One APK supports both Sender and Receiver. Android 9 and later are supported; th
 - New notifications and subsequent changes replace the same mirrored notification.
 - Removing a notification on Sender removes it on Receiver.
 - Swiping a mirrored notification on Receiver requests dismissal on Sender.
-- Reply and Mark as read use the original app's notification actions, when available.
+- Every native notification action is forwarded independently with its original label and order, including Call, Mark as read and Reply. Distinct wearable actions are also retained.
 - **Sync now** reconciles the currently active notifications, including stale notifications on Receiver.
 - Replayed and out-of-order events are tracked so an older update cannot resurrect a removed notification.
 - An encrypted local send queue retries after Internet connectivity returns.
@@ -16,29 +16,37 @@ One APK supports both Sender and Receiver. Android 9 and later are supported; th
 
 ## Reliable notification actions
 
-The 1.2.0 work builds on the existing 1.1.1 sync branch and adapts the notification-reply
-architecture described in the supplied Bridge report. It uses Android APIs and this app's own
-transport; no Bridge backend or Telegram Bot API is involved.
+Version 1.3.0 builds on the latest 1.2.0 reliability branch, not the older `main`.
+It uses Android's notification APIs and this app's own transport; no Bridge backend is involved.
 
-- Reply selects an unambiguous semantic reply action, or a unique legacy free-form input.
-  Native actions take precedence; wearable actions provide a fallback. Multiple inputs or
-  ambiguous actions are unsupported. Mark as read requires semantic metadata.
-- Every actionable snapshot carries a generation, an opaque action reference and source profile.
-  Receiver rejects a superseded action locally. Sender reads the current active notification and
-  verifies its package, key, profile, post time, generation and action before dispatch.
-- The original RemoteInput result key is used. Immutable reply intents are rejected on Android 12+;
-  actions requiring source unlock are respected. Mirrored actions require Receiver authentication
-  on Android 12+. PendingIntent identity includes the snapshot generation.
-- Receiver durably queues actions. Sender returns an encrypted result such as DISPATCHED, STALE,
-  EXPIRED, NEEDS_UNLOCK, CANCELLED, UNSUPPORTED, DENIED, BUSY or UNKNOWN. The notification and status
-  screen show the result. Mark as read only clears the matching mirror after DISPATCHED.
-- DISPATCHED means the source PendingIntent was dispatched. It does not prove delivery to Telegram
-  servers or that a message was read.
-- A durable claim is recorded before dispatch. If the process stops around that operation, the
-  action is reported UNKNOWN and is not automatically dispatched again. Check the source app
-  before manually retrying an unknown reply. Exactly-once delivery is not claimed.
+- Actions are a list, not two fixed capabilities. Each action carries its own opaque ID, original
+  title, semantic metadata, authentication requirement and all RemoteInput keys/labels/choices.
+  Equal labels and multiple reply buttons do not make the action list ambiguous.
+- Native actions remain in source order. A wearable copy is omitted only if its PendingIntent
+  and metadata match a native action. Distinct wearable intents remain reachable.
+- Samsung Messages' Call / Mark as read / Reply appear as three separate buttons, even if an OEM
+  omits semantic mark-as-read metadata. Calls invoke the original phone app **on Sender**.
+- Android's standard notification layout has three action slots. With more than three actions,
+  two originals plus **All N actions** are shown. Tapping the notification opens the complete list.
+  Multiple text inputs and choice-only inputs can be completed on that screen.
+- Single text/choice inputs use inline RemoteInput with the **original result key**. No text is
+  guessed from the button label. Missing intents, immutable input intents and attachment-only
+  inputs retain a visible action with an explanation; this release cannot forward attachments.
+- Each action is bound to a snapshot generation/profile and its precise origin/index/metadata.
+  Sender resolves a fresh active notification and its current PendingIntent before dispatch.
+  Changed content, labels, inputs, choices or a replaced PendingIntent invalidate old references.
+- Receiver durably queues commands; Sender returns encrypted results such as DISPATCHED, STALE,
+  EXPIRED, NEEDS_UNLOCK, CANCELLED, UNSUPPORTED, DENIED, BUSY or UNKNOWN. Action status retains the
+  original button title. Generic actions do not arbitrarily remove a mirror: source removal drives sync.
+- Source authentication requirements are respected. On Android 12+, activity actions require an
+  unlocked Sender. Android 14 PendingIntent dispatch explicitly contributes the listener's activity
+  launch privileges; OEM/background policies can still prevent the original UI from opening.
+- DISPATCHED means PendingIntent dispatch was attempted successfully, not that a call connected,
+  a remote service delivered a message, or an activity necessarily became visible.
+- The existing durable claim/deduplication rules remain: an interrupted dispatch reports UNKNOWN
+  and never automatically repeats the action. Check Sender before retrying UNKNOWN.
 
-Install 1.2.0 on both phones to use generation-checked actions and result acknowledgements.
+Install 1.3.0 on both phones to use generation-checked actions and result acknowledgements.
 The existing pair code, delivery choice and relay settings are preserved during signed updates.
 
 ## Two delivery choices
@@ -66,8 +74,8 @@ network aware, and use backoff with jitter. Old socket callbacks cannot reconnec
 
 ## Pair and start
 
-1. Install the same 1.2.0 APK on both phones. In-place updates of the previous CI-signed 1.0.0/1.1.0/1.1.1 builds
-   preserve settings because the existing CI debug signing key is retained.
+1. Install the same 1.3.0 APK on both phones. In-place updates of the previous CI-signed 1.0.0/1.1.0/1.1.1 builds
+   preserve settings because the existing CI debug signing key is retained. The 1.2.0 CI build is also an update source.
 2. On the first phone choose **Sender**, press **Generate**, and save the generated pair key.
 3. Copy the **exact same** pair key to the second phone, choose **Receiver**, and save.
 4. Select the same delivery mode in Advanced on both phones.
@@ -109,11 +117,24 @@ npm run deploy
 Advanced → Private key on both phones. `/health` reports a version and whether service-account
 configuration is present; it does not validate Google permissions or guarantee FCM delivery.
 
-Opening the base Worker URL in a browser returns `{"error":"not_found"}` by design: only
-`GET /health` and `POST /v1/send` are routes. This response alone does not indicate a broken Worker.
+Worker 1.3.0 responds at the base URL with service/version information. An older Worker
+may return `{"error":"not_found"}` there; that alone does not mean it is broken.
 Check `https://notification.mhdvi45.workers.dev/health`, then **Send Test** in Push mode on the phones.
 Keep the Android Relay URL set to the base URL without `/health` or `/v1/send`; the app adds
-`/v1/send` itself. An older deployed Worker may report only `{"ok":true}` at `/health`.
+`/v1/send` itself. The Android app also normalizes pasted `/health`, `/v1/send` and
+`/v1/check` URLs to the correct base, and reports invalid HTTPS URLs before saving. An older deployed Worker may report only `{"ok":true}` at `/health`. The configured default
+returned that response on 2026-10-09; this does not establish working Firebase delivery.
+
+In Advanced, **Check Worker** checks reachability, private-key authorization and the Firebase
+project against the APK. It calls authenticated `POST /v1/check`, which uses FCM `validate_only`
+to verify sending permission **without delivering a notification**. A reachable older deployment
+asks you to deploy Worker 1.3.0. **Send Test** is still required to verify the second phone/topic.
+See [relay/README.md](relay/README.md) for deployment and interpreting errors.
+
+Android normalizes wire message IDs (including `result:command-id` acknowledgements) to the
+Worker's allowed format. The encrypted command ID is preserved for matching results. Push requests
+include the APK's Firebase project ID and allow up to 20 seconds for a cold OAuth/FCM request;
+Compatibility retains its 4-second read timeout. No periodic health polling was added.
 
 The Worker validates body size, topic direction, ciphertext and FCM's 2 KiB topic data limit.
 It caches OAuth tokens, retries one expired token, propagates retry delays, and avoids logging
@@ -143,8 +164,15 @@ WorkManager. There is no periodic polling in Push mode. R8 and resource shrinkin
 - Sync snapshots cover up to 200 active notifications. Incomplete snapshots never clear unseen notifications.
 - Receiver retains up to 512 ordering records and the latest 256 message IDs.
 - Large notification text is shortened at Unicode code-point boundaries to fit the topic budget.
+- If action metadata itself exceeds a single FCM message, the complete snapshot is split into
+  individually encrypted parts (each still fits the 2 KiB topic budget). The outbox enqueues a whole
+  group atomically. Receiver persists only ciphertext and displays the snapshot only after complete,
+  hash-verified assembly, including out-of-order/replayed parts and process restarts.
+- Assembled metadata is limited to 64 KiB / 92 parts. Receiver buffers at most 192 parts across eight
+  groups for ten minutes. Over-limit metadata is rejected visibly rather than dropping buttons.
+  Missing parts require **Sync now**; delivery and notification availability remain best effort.
   Replies are rejected with a visible error if they exceed the byte budget; user text is never silently shortened.
-- Notification actions depend on the original app exposing a supported action and it still being active.
+- Notification actions depend on the original app exposing an action and it still being active. Custom buttons drawn only inside RemoteViews are not exposed as Notification.Action and cannot be extracted by this mechanism.
 - A queue acknowledgement means saved for sending; the status screen records actual HTTP send success,
   which differs from the source-side action result described below.
 
@@ -159,7 +187,7 @@ node --test relay/test/relay.test.js
 
 GitHub Actions restores the stable CI debug signature, tests Android sync/crypto, action-selection, generation, acknowledgement and bounded-queue rules and Worker
 behavior, runs Android lint, builds the signed release APK with R8 obfuscation/resource shrinking,
-and uploads it as `Notification-1.2.0-optimized-apk`. CI verifies that the obfuscation mapping exists
+and uploads it as `Notification-1.3.0-optimized-apk`. CI verifies that the obfuscation mapping exists
 and reports the APK byte size and SHA-256.
 The extra JUnit/JSON dependencies are test-only and are not included in the APK.
 
@@ -168,7 +196,7 @@ and unit tests verify code and rules; they do not establish real battery consump
 merging, test on both real phones in both delivery modes:
 
 1. New notification, content update, Sender removal and Receiver swipe-to-dismiss.
-2. Reply and Mark as read, including stale generation, vanished notification, locked Sender,
+2. Samsung Messages Call / Mark as read / Reply, duplicate labels and multiple replies; more than three actions, choice-only/multiple inputs and distinct wearable actions. Include stale generation, vanished notification, locked Sender,
    immutable/cancelled PendingIntent and ambiguous actions. Verify the result on Receiver.
 3. Receiver offline, Sender offline, restore connectivity, then **Sync now**.
 4. Swipe from Recents, screen off/Doze, reboot, and network/VPN changes.
@@ -178,5 +206,5 @@ merging, test on both real phones in both delivery modes:
 7. Interrupt the process around dispatch: UNKNOWN must never trigger automatic reply replay.
 8. Oversized Persian/emoji replies must show an error without sending a shortened message.
 
-Existing draft PRs #1 and #2 are unchanged. Keep this work in a separate draft PR until real-device
+Existing draft PRs #1–#4 are unchanged. This work targets `agent/bridge-reliability-v1.2`. Keep this work in a separate draft PR until real-device
 and deployed-Worker validation are complete; do not merge to main without the user's approval.

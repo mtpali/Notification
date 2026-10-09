@@ -12,8 +12,8 @@ android {
         applicationId = "com.mtpali.notification"
         minSdk = 28
         targetSdk = 34
-        versionCode = 19
-        versionName = "1.2.0"
+        versionCode = 20
+        versionName = "1.3.0"
     }
 
     val ciDebugKeystore = file("ci-debug.keystore")

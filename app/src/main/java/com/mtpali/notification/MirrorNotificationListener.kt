@@ -99,7 +99,7 @@ class MirrorNotificationListener : NotificationListenerService() {
         return MirrorPayload(sbn.packageName, app.take(128), snapshot.title.take(256), snapshot.text.take(1800),
             sbn.postTime, sbn.key, snapshot.reply != null, snapshot.read != null, eventTime = 0,
             generation = snapshot.generation, replyActionId = snapshot.replyId, readActionId = snapshot.readId,
-            sourceUserId = snapshot.userId)
+            sourceUserId = snapshot.userId, actions = snapshot.mirroredActions)
     }
 
     private fun publishSnapshot() {
@@ -201,7 +201,7 @@ class MirrorNotificationListener : NotificationListenerService() {
             expectedPairCode: String = Prefs.pairCode(context)): Boolean {
             if (Prefs.mode(context) != Prefs.MODE_SENDER || expectedPairCode != Prefs.pairCode(context) ||
                 !command.isFresh() || command.type !in setOf(CommandPayload.TYPE_SYNC, CommandPayload.TYPE_REPLY,
-                    CommandPayload.TYPE_MARK_READ, CommandPayload.TYPE_DISMISS)) return false
+                    CommandPayload.TYPE_MARK_READ, CommandPayload.TYPE_DISMISS, CommandPayload.TYPE_ACTION)) return false
             if (!CommandInbox.add(context.applicationContext, command, relayId)) return false
             refresh(context)
             return true
@@ -212,7 +212,7 @@ class MirrorNotificationListener : NotificationListenerService() {
                 Prefs.mode(context) != Prefs.MODE_SENDER || expectedPairCode != Prefs.pairCode(context)) return true
             val status = if (!command.isFresh()) DispatchStatus.EXPIRED
                 else if (command.type !in setOf(CommandPayload.TYPE_REPLY, CommandPayload.TYPE_MARK_READ,
-                    CommandPayload.TYPE_DISMISS)) DispatchStatus.UNSUPPORTED
+                    CommandPayload.TYPE_DISMISS, CommandPayload.TYPE_ACTION)) DispatchStatus.UNSUPPORTED
                 else if (CommandInbox.rejectionRemembered(context, command)) DispatchStatus.BUSY else DispatchStatus.UNKNOWN
             return RelayClient.publishAccepted(context, MirrorPayload(command.packageName, "", "", "", command.sourcePostTime,
                 command.notificationKey, event = MirrorPayload.EVENT_ACTION_RESULT, eventTime = Prefs.nextEventTime(context),

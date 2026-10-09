@@ -30,6 +30,10 @@
             android:resource="@drawable/ic_notification" />
 
         <activity
+            android:name=".NotificationActionsActivity"
+            android:exported="false" />
+
+        <activity
             android:name=".AppSelectionActivity"
             android:exported="false" />
 

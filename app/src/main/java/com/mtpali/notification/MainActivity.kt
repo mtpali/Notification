@@ -19,6 +19,7 @@ import android.widget.RadioGroup
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import com.google.firebase.FirebaseApp
 
 class MainActivity : Activity() {
     private lateinit var senderRadio: RadioButton
@@ -167,6 +168,23 @@ class MainActivity : Activity() {
             setText(Prefs.relayUrl(this@MainActivity))
         }
         fcmSettingsPanel.addView(relayUrlInput)
+        val relayCheckStatus = TextView(this)
+        fcmSettingsPanel.addView(Button(this).apply {
+            text = "Check Worker"
+            setOnClickListener {
+                if (!saveSettings(false)) return@setOnClickListener
+                if (!Prefs.relayConfigured(this@MainActivity)) { toast("Enter the Worker private key"); return@setOnClickListener }
+                isEnabled = false
+                relayCheckStatus.text = "Checking Worker and Firebase…"
+                val project = runCatching { FirebaseApp.getInstance().options.projectId.orEmpty() }.getOrDefault("")
+                RelayDiagnostics.check(Prefs.relayUrl(this@MainActivity), Prefs.relayToken(this@MainActivity), project) { result ->
+                    runOnUiThread {
+                        if (!isDestroyed) { isEnabled = true; relayCheckStatus.text = result }
+                    }
+                }
+            }
+        })
+        fcmSettingsPanel.addView(relayCheckStatus)
         advancedPanel.addView(fcmSettingsPanel)
         root.addView(advancedPanel)
 
@@ -357,6 +375,13 @@ class MainActivity : Activity() {
         }
 
         pairInput.error = null
+        val relayBase = runCatching { RelayProtocol.baseUrl(relayUrlInput.text.toString().trim().ifBlank { Prefs.DEFAULT_RELAY_URL }) }
+            .getOrNull()
+        if (relayBase == null && !compatibilityRadio.isChecked) {
+            relayUrlInput.error = "Use a valid HTTPS Worker URL"; return false
+        }
+        relayUrlInput.error = null
+        if (relayBase != null) relayUrlInput.setText(relayBase)
         val oldMode = Prefs.mode(this)
         val mode = if (receiverRadio.isChecked) Prefs.MODE_RECEIVER else Prefs.MODE_SENDER
         val transport = if (compatibilityRadio.isChecked) Prefs.RECEIVER_STABLE else Prefs.RECEIVER_PUSH
@@ -368,7 +393,7 @@ class MainActivity : Activity() {
         Prefs.setMode(this, mode)
         Prefs.setPairCode(this, code)
         Prefs.setRelayToken(this, relayTokenInput.text.toString())
-        Prefs.setRelayUrl(this, relayUrlInput.text.toString())
+        if (relayBase != null) Prefs.setRelayUrl(this, relayBase)
         Prefs.setReceiverTransport(this, transport)
         editingRelayKey = false
 
